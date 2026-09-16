@@ -9,7 +9,7 @@ defmodule Sheetshow.PlannerTest do
   end
 
   describe "runs" do
-    test "neighbouring cells travel in one op" do
+    test "neighbouring cells travel in one op " do
       plan = Sheetshow.row([1, 2, 3], sheet: "Costs") |> Sheetshow.plan!()
 
       assert a1(plan) == ["Costs!A1:C1"]
