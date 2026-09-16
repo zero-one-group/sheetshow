@@ -1,0 +1,274 @@
+defmodule Sheetshow.Xlsx.Workbook do
+  @moduledoc false
+  # Which parts of the package hold what.
+  #
+  # None of it is at a fixed path. A worksheet is found by following a
+  # relationship from workbook.xml, which is itself found by following one from
+  # the package root, and a target may be written relative to the part that
+  # names it or absolute from the package root. Both are in the wild, one
+  # writer having produced each in the two files this was checked against, so
+  # both are read.
+
+  alias Sheetshow.Error
+  alias Sheetshow.Xlsx.Xml
+
+  @root_rels "_rels/.rels"
+
+  @office_document "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+  @worksheet "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
+  @shared_strings "http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings"
+  @styles "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+
+  @type sheet :: %{title: String.t(), part: String.t()}
+  @type t :: %{
+          part: String.t(),
+          sheets: [sheet()],
+          strings: String.t() | nil,
+          styles: String.t() | nil
+        }
+
+  @doc "Where the root relationships say the workbook part is."
+  @spec part(binary()) :: {:ok, String.t()} | {:error, Error.t()}
+  def part(rels_xml) do
+    with {:ok, rels} <- relationships(rels_xml, @root_rels) do
+      case Enum.find(rels, &(&1.type == @office_document)) do
+        nil -> {:error, missing("the package names no workbook part", @root_rels)}
+        rel -> {:ok, resolve(rel.target, "")}
+      end
+    end
+  end
+
+  @doc """
+  The sheets, in the order the workbook lists them, which is tab order, and
+  the parts holding the shared strings and the styles.
+  """
+  @spec parse(binary(), binary(), String.t()) :: {:ok, t()} | {:error, Error.t()}
+  def parse(workbook_xml, rels_xml, workbook_part) do
+    rels_part = rels_path(workbook_part)
+    base = directory(workbook_part)
+
+    with {:ok, rels} <- relationships(rels_xml, rels_part),
+         {:ok, listed} <- sheets(workbook_xml, workbook_part) do
+      by_id = Map.new(rels, &{&1.id, &1})
+
+      sheets =
+        for %{title: title, rid: rid} <- listed,
+            rel = Map.get(by_id, rid),
+            rel != nil and rel.type == @worksheet do
+          %{title: title, part: resolve(rel.target, base), rid: rid}
+        end
+
+      {:ok,
+       %{
+         part: workbook_part,
+         sheets: sheets,
+         strings: target(rels, @shared_strings, base),
+         styles: target(rels, @styles, base)
+       }}
+    end
+  end
+
+  @doc """
+  Where a part's own relationships live: `xl/workbook.xml` keeps them in
+  `xl/_rels/workbook.xml.rels`.
+  """
+  @spec rels_path(String.t()) :: String.t()
+  def rels_path(part) do
+    directory = Path.dirname(part)
+    base = Path.basename(part)
+
+    case directory do
+      "." -> "_rels/#{base}.rels"
+      directory -> "#{directory}/_rels/#{base}.rels"
+    end
+  end
+
+  @relationships_ns "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  @worksheet_type "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
+  @styles_type "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"
+
+  @doc "A part name under `base` that nothing in the package is using yet."
+  @spec free_part([String.t()], String.t(), String.t()) :: String.t()
+  def free_part(taken, base, prefix) do
+    Enum.find_value(1..100_000, fn n ->
+      name = "#{base}/#{prefix}#{n}.xml"
+      if name not in taken, do: name
+    end)
+  end
+
+  @doc "A relationship id the file is not already using."
+  @spec free_rid(binary()) :: String.t()
+  def free_rid(rels_xml) do
+    next =
+      ~r/Id="rId(\d+)"/
+      |> Regex.scan(rels_xml)
+      |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+      |> Enum.max(fn -> 0 end)
+      |> Kernel.+(1)
+
+    "rId#{next}"
+  end
+
+  @doc """
+  Adds a sheet to the three places a package records one: the relationship that
+  says where its part is, the `<sheets>` list that gives it a name and a tab
+  position, and the content types that say what kind of part it is. A sheet
+  missing from any one of them is a workbook a reader refuses to open.
+  """
+  @spec add_sheet(
+          %{workbook: binary(), rels: binary(), types: binary()},
+          String.t(),
+          String.t(),
+          String.t()
+        ) ::
+          %{workbook: binary(), rels: binary(), types: binary()}
+  def add_sheet(parts, title, part, rid) do
+    sheet_id = next_sheet_id(parts.workbook)
+
+    element =
+      ~s(<sheet name="#{Xml.escape(title)}" sheetId="#{sheet_id}" ) <>
+        ~s(r:id="#{rid}" xmlns:r="#{@relationships_ns}"/>)
+
+    %{
+      workbook: insert_sheet(parts.workbook, element),
+      rels:
+        insert_rel(parts.rels, rid, @worksheet, Path.basename(part) |> then(&"worksheets/#{&1}")),
+      types: insert_override(parts.types, "/" <> part, @worksheet_type)
+    }
+  end
+
+  @doc "Takes a sheet back out of all three."
+  @spec delete_sheet(
+          %{workbook: binary(), rels: binary(), types: binary()},
+          String.t(),
+          String.t(),
+          String.t()
+        ) ::
+          %{workbook: binary(), rels: binary(), types: binary()}
+  def delete_sheet(parts, title, part, rid) do
+    %{
+      workbook:
+        String.replace(
+          parts.workbook,
+          ~r{<sheet\b[^>]*name="#{Regex.escape(Xml.escape(title))}"[^>]*/>},
+          ""
+        ),
+      rels:
+        String.replace(parts.rels, ~r{<Relationship\b[^>]*Id="#{Regex.escape(rid)}"[^>]*/>}, ""),
+      types:
+        String.replace(
+          parts.types,
+          ~r{<Override\b[^>]*PartName="/#{Regex.escape(part)}"[^>]*/>},
+          ""
+        )
+    }
+  end
+
+  @doc "Declares a styles part that the package did not have."
+  @spec add_styles(%{rels: binary(), types: binary()}, String.t(), String.t()) ::
+          %{rels: binary(), types: binary()}
+  def add_styles(parts, part, rid) do
+    %{
+      rels: insert_rel(parts.rels, rid, @styles, Path.basename(part)),
+      types: insert_override(parts.types, "/" <> part, @styles_type)
+    }
+  end
+
+  defp insert_sheet(xml, element) do
+    cond do
+      String.contains?(xml, "</sheets>") ->
+        String.replace(xml, "</sheets>", element <> "</sheets>", global: false)
+
+      Regex.match?(~r{<sheets\s*/>}, xml) ->
+        String.replace(xml, ~r{<sheets\s*/>}, "<sheets>#{element}</sheets>", global: false)
+
+      true ->
+        String.replace(xml, ~r{(<workbook\b[^>]*>)}, "\\1<sheets>#{element}</sheets>",
+          global: false
+        )
+    end
+  end
+
+  defp insert_rel(xml, rid, type, target) do
+    element = ~s(<Relationship Id="#{rid}" Type="#{type}" Target="#{target}"/>)
+    String.replace(xml, "</Relationships>", element <> "</Relationships>", global: false)
+  end
+
+  defp insert_override(xml, part_name, content_type) do
+    element = ~s(<Override PartName="#{part_name}" ContentType="#{content_type}"/>)
+    String.replace(xml, "</Types>", element <> "</Types>", global: false)
+  end
+
+  # A sheetId is a number a workbook gives a tab and never reuses, so the next
+  # one is past the highest already there rather than the count of them.
+  defp next_sheet_id(xml) do
+    Regex.scan(~r/sheetId="(\d+)"/, xml)
+    |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp target(rels, type, base) do
+    case Enum.find(rels, &(&1.type == type)) do
+      nil -> nil
+      rel -> resolve(rel.target, base)
+    end
+  end
+
+  # A target starting with "/" is from the package root. Anything else is
+  # relative to the part that named it, which is the directory holding the
+  # `_rels` folder, not the folder itself, so `_rels/.rels` resolves against
+  # the package root and `xl/_rels/workbook.xml.rels` against `xl/`.
+  defp resolve("/" <> absolute, _base), do: absolute
+  defp resolve(relative, ""), do: normalize(relative)
+  defp resolve(relative, base), do: normalize(base <> "/" <> relative)
+
+  defp normalize(path), do: path |> Path.expand("/") |> String.trim_leading("/")
+
+  defp directory(part) do
+    case Path.dirname(part) do
+      "." -> ""
+      directory -> directory
+    end
+  end
+
+  defp relationships(xml, part) do
+    Xml.fold(xml, part, [], fn
+      {:startElement, _uri, ~c"Relationship", _q, attrs}, acc ->
+        [
+          %{
+            id: Xml.attr(attrs, ~c"Id"),
+            type: Xml.attr(attrs, ~c"Type"),
+            target: Xml.attr(attrs, ~c"Target")
+          }
+          | acc
+        ]
+
+      _event, acc ->
+        acc
+    end)
+    |> case do
+      {:ok, rels} -> {:ok, Enum.reverse(rels)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp sheets(xml, part) do
+    Xml.fold(xml, part, [], fn
+      {:startElement, _uri, ~c"sheet", _q, attrs}, acc ->
+        [%{title: Xml.attr(attrs, ~c"name"), rid: Xml.attr(attrs, ~c"id")} | acc]
+
+      _event, acc ->
+        acc
+    end)
+    |> case do
+      {:ok, []} -> {:error, missing("the workbook lists no sheets", part)}
+      {:ok, sheets} -> {:ok, Enum.reverse(sheets)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp missing(why, part) do
+    Error.new(:invalid_xlsx, "this is not a workbook Sheetshow can read: #{why}", part: part)
+  end
+end

@@ -1,0 +1,20 @@
+# Build, deps, docs, coverage
+/_build/
+/deps/
+/doc/
+/cover/
+
+# Editors and tooling
+/.elixir_ls/
+/tmp/
+erl_crash.dump
+
+# Package artifacts
+*.ez
+sheetshow-*.tar
+
+# Local credentials for the integration tests: they belong outside the repo
+# entirely, but belt and braces. Recorded fixtures are scrubbed and committed.
+/.env
+*.json
+!/test/fixtures/*.json

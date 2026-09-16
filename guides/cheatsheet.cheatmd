@@ -1,0 +1,368 @@
+# Cheatsheet
+
+Every public function, one line each, generated from the compiled modules by
+`dev/cheatsheet.exs`; `test/sheetshow/cheatsheet_test.exs` fails if it drifts.
+**`+ !`** marks a function with a raising twin of the same arity. The sections
+are the sidebar's.
+
+## Start here
+
+### Sheetshow
+
+| | |
+| --- | --- |
+| `authenticate/1` | Trades the workbook's credentials for an access token. |
+| `beside/1,2` | Places groups of cells side by side, each starting on the column after the… |
+| `col/2` | One column of cells from a list of values, top to bottom. |
+| `connect/1` | Makes a workbook ready to use and learns the sheets it has. |
+| `fetch_sheets/1` | Asks the spreadsheet which sheets it has, and puts them on the workbook. |
+| `max_col/1` | The highest column any cell sits on, or `nil` for no cells. |
+| `max_row/1` | The highest row any cell sits on, or `nil` for no cells. |
+| `pad_below/2` | Adds `n` empty rows below the cells, so the next `stack/1` leaves a gap. |
+| `pad_right/2` | Adds `n` empty columns to the right of the cells; see `pad_below/2`. |
+| `plan/2` | Turns cells into a plan: the ops that write them, in the order they are to… **+ !** |
+| `put_sheet/2` | Puts every cell on a sheet. |
+| `put_style/2` | Merges a style into every cell's; see `Sheetshow.Cell.put_style/2`. |
+| `read_cells/2` | The cells in a range, in reading order, with empty cells left out. **+ !** |
+| `read_rows/2` | The values in a range, as rows: what the cells work out to, rather… **+ !** |
+| `records/3` | One row of cells per record (a map or struct), one column per key, in key… |
+| `row/2` | One row of cells from a list of values, left to right. |
+| `rows/2` | Cells from rows of values. |
+| `run/2` | Carries out a plan and gives back the workbook. |
+| `shift/3` | Moves every cell by `rows` down and `cols` right; see `Sheetshow.Cell.shift/3`. |
+| `stack/1,2` | Stacks groups of cells, each starting on the row after the previous group's… |
+| `to_rows/1` | Values back from cells, as rows relative to their bounding range; gaps are… |
+
+## Cells and layout
+
+### Sheetshow.A1
+
+| | |
+| --- | --- |
+| `col_to_letters/1` | 0-indexed column to letters. |
+| `letters_to_col/1` | Letters to 0-indexed column. |
+| `parse_ref/1` | Parses one endpoint of a reference into `{col, row}`, 0-indexed, where a… |
+| `quote_sheet/1` | Quotes a sheet name when A1 notation needs it. |
+| `ref_like?/1` | Whether a bare string reads as a cell or range reference rather than a sheet… |
+| `split_sheet/1` | Splits an A1 string into `{sheet, rest}`. |
+
+### Sheetshow.Cell
+
+| | |
+| --- | --- |
+| `new/3` | Builds a cell at a `Sheetshow.Coord` or an A1 reference (raising if the reference… |
+| `put_sheet/2` | Puts the cell on a sheet. |
+| `put_style/2` | Merges a style into the cell's, the new keys winning. |
+| `shift/3` | Moves the cell by `rows` down and `cols` right; see `Sheetshow.Coord.shift/3`. |
+| `valid?/1` | Whether the term is a valid cell. |
+| `validate/1` | Checks the coordinate, value and style. |
+
+### Sheetshow.Coord
+
+| | |
+| --- | --- |
+| `compare/2` | Row-major order within a sheet; sheets order by name, `nil` first. |
+| `from_a1/1` | Parses a single-cell A1 reference. **+ !** |
+| `new/3` | Builds a coordinate. |
+| `shift/3` | Moves a coordinate by `rows` down and `cols` right. |
+| `to_a1/1` | Prints as A1, with the sheet when there is one. |
+
+### Sheetshow.Range
+
+| | |
+| --- | --- |
+| `bounded?/1` | Whether both ends are known. |
+| `bounding/1` | The smallest range holding every coordinate or cell given. |
+| `contains?/2` | Whether the coordinate lies inside the range. |
+| `from_a1/1` | Parses an A1 range. **+ !** |
+| `new/3` | A bounded range from Elixir ranges of rows and columns. |
+| `to_a1/1` | Prints as A1. |
+
+### Sheetshow.Style
+
+| | |
+| --- | --- |
+| `hex_to_rgb/1` | A `"#RRGGBB"` colour as `{red, green, blue}` in 0..255. |
+| `keys/0` | Every key a style may have. |
+| `rgb_to_hex/1` | `{red, green, blue}` in 0..255 as `"#RRGGBB"`. |
+| `valid?/1` | Whether the term is a valid style. |
+| `validate/1` | Checks every key and value. |
+
+### Sheetshow.Value
+
+| | |
+| --- | --- |
+| `default_number_format/1` | The number format that makes a temporal value readable in Sheets… |
+| `from_serial/2` | A serial number back to a `Date`, `NaiveDateTime` or `Time`, rounded to the… |
+| `kind/1` | The kind of a valid value. |
+| `to_serial/1` | A temporal value as a Sheets serial number. |
+| `valid?/1` | Whether the term is a cell value. |
+| `validate/1` | Checks a value. |
+
+## Plans
+
+### Sheetshow.Op
+
+| | |
+| --- | --- |
+| `modules/0` | Every op struct, for guards and tests. |
+| `op?/1` | Whether the term is one of the ops. |
+| `sheet/1` | The sheet an op works on. |
+
+### Sheetshow.Op.AddSheet
+
+| | |
+| --- | --- |
+| `new/1` | Builds the op. |
+
+### Sheetshow.Op.AppendRows
+
+| | |
+| --- | --- |
+| `height/1` | How many rows the op adds. |
+| `new/2` | Builds the op from cells. |
+
+### Sheetshow.Op.DeleteRows
+
+| | |
+| --- | --- |
+| `count/1` | How many rows the op removes. |
+| `new/2` | Builds the op. |
+
+### Sheetshow.Op.DeleteSheet
+
+| | |
+| --- | --- |
+| `new/1` | Builds the op. |
+
+### Sheetshow.Op.PutCells
+
+| | |
+| --- | --- |
+| `col/1` | The column the run starts at. |
+| `new/2` | Builds the op from cells, sorted left to right. |
+| `range/1` | The rectangle the op writes, which a backend turns into a grid range. |
+| `row/1` | The row the run sits on. |
+
+### Sheetshow.Op.SetDimensions
+
+| | |
+| --- | --- |
+| `new/4` | Builds the op. |
+
+## A database on a tab
+
+### Sheetshow.Log
+
+| | |
+| --- | --- |
+| `columns/1` | The tab's columns, left to right. |
+| `create/1` | The plan that makes the tab and writes its header. |
+| `decode/3` | Events from the tab's values: rows of cell values, as… **+ !** |
+| `fold/1` | The log as it stands: the latest event for each id, in the order the ids first… |
+| `header/2` | The header as cells, bold unless you say otherwise. |
+| `new/2` | A log on a tab, with the columns its rows have. |
+| `plan/2` | The plan that appends events, as one `Sheetshow.Op.AppendRows`, so a batch… **+ !** |
+| `read/3` | Every event on the tab, in the order it was written. **+ !** |
+| `view/2` | Cells for a second tab that shows the log as it stands, for a person to look at:… |
+
+### Sheetshow.Log.Event
+
+| | |
+| --- | --- |
+| `delete/1` | The tombstone that takes a row out of the fold. |
+| `errors?/1` | Whether a read left anything flagged on this event. |
+| `new/2` | An event holding a record, with an id of its own unless you pass one. |
+| `put/2` | Merges changes into the record, keeping the id: the update you append next. |
+
+### Sheetshow.Schema
+
+| | |
+| --- | --- |
+| `cast/2` | The values of one row, in schema order, as a record, with an error beside each… |
+| `cast_boolean/1` | Reads a cell the way a `:boolean` column does, which is also how a log… |
+| `columns/1` | The column names, in order, as they read in a header row. |
+| `encode/2` | A record as the cell values of one row, in schema order. |
+| `types/0` | Every type a column can have. |
+| `validate/1` | Checks a schema: at least one column, names that are atoms and appear once… |
+
+### Sheetshow.Table
+
+| | |
+| --- | --- |
+| `columns/1` | The columns a new tab is given, left to right. |
+| `compact/1` | The plan that takes every soft-deleted row off the tab for good, bottom-up and… |
+| `create/1` | The plan that makes the tab and writes its header. |
+| `decode/3` | A snapshot from the tab's values: rows of cell values, as… **+ !** |
+| `delete/2` | Takes a row out. |
+| `empty/1` | The snapshot of a tab that has just been made: the header `create/1` writes, and… |
+| `fetch/2` | The live row with this id, if the snapshot has one. |
+| `header/2` | The header as cells, bold unless you say otherwise. |
+| `insert/2` | A row to add, with an id of its own unless you pass one. |
+| `live/1` | The rows a reader would call the table's contents: the ones not tombstoned. |
+| `new/2` | A table on a tab, with the columns its rows have. |
+| `plan/2` | The plan that carries out these changes against the tab as this snapshot… **+ !** |
+| `read/3` | The tab as it stands, as a snapshot. **+ !** |
+| `refresh/2` | The same snapshot, with the rows found where they are now: one request for the… |
+| `restore/1` | Puts a soft-deleted row back: empties its `deleted` flag. |
+| `update/2` | A change to the columns it names on the row with this id, leaving every other… |
+
+### Sheetshow.Table.Row
+
+| | |
+| --- | --- |
+| `errors?/1` | Whether anything on this row would not read. |
+
+### Sheetshow.ULID
+
+| | |
+| --- | --- |
+| `generate/1` | A new identifier, timed by the system clock in microseconds unless you say… |
+| `timestamp/1` | The moment an identifier was made. |
+| `valid?/1` | Whether the string is one of ours: 26 canonical characters, and a first one low… |
+
+## Backends
+
+### Sheetshow.Backend
+
+| | |
+| --- | --- |
+| `capabilities/1` | What the workbook's backend promises. |
+| `ensure/2` | `:ok` when the backend promises the capability, and an error naming it when it… |
+| `known/0` | Every capability a backend answers for. |
+| `supports?/2` | Whether the workbook's backend promises one thing. |
+
+### Sheetshow.Backend: callbacks
+
+| | |
+| --- | --- |
+| `authenticate/1` | Trades credentials for a token. |
+| `capabilities/1` | What this backend promises for this workbook. |
+| `connect/1` | Makes the workbook ready to use, and learns its sheets. |
+| `fetch_sheets/1` | Asks the spreadsheet which sheets it has. |
+| `read_cells/2` | The cells in a range. |
+| `read_rows/2` | The values in a range, as rows. |
+| `read_rows_batch/2` | The values in several ranges, in the order they were asked for. |
+| `run/2` | Carries out a plan. |
+
+### Sheetshow.Client
+
+| | |
+| --- | --- |
+| `new/2` | Builds a client for one spreadsheet. |
+| `ready?/2` | Whether the client holds a token that is still good. |
+
+### Sheetshow.Google
+
+| | |
+| --- | --- |
+| `decode/1` | Cells from a `spreadsheets.get` answer. |
+| `decode_values/1` | Rows of values from a `spreadsheets.values.get` answer. |
+| `default_scopes/0` | The scopes Sheetshow asks Google for when you name none, whichever kind… |
+| `encode/2` | A plan as a `spreadsheets.batchUpdate` body, given the sheet ids the… **+ !** |
+| `sheet_id/2` | The id a new sheet will claim, given the ids already in use. |
+
+### Sheetshow.Memory
+
+| | |
+| --- | --- |
+| `new/1` | An empty spreadsheet, or one with the sheets named already there. |
+| `read/2` | The cells inside a range, in reading order. **+ !** |
+| `run/2` | Carries out an op or a plan, in order, and gives back the spreadsheet it… **+ !** |
+| `titles/1` | The sheet titles, sorted. |
+
+### Sheetshow.Store
+
+| | |
+| --- | --- |
+| `conditional_write?/1` | Whether this store can refuse a write whose precondition no longer… |
+| `exists?/1` | Whether the file is there. |
+| `local/1` | A file on the machine this is running on. |
+| `nextcloud/4` | A file in a Nextcloud account, by the path you would see in the web interface. |
+| `read/1` | The bytes, and the version they were at. |
+| `webdav/2` | A file on a WebDAV server: Nextcloud, ownCloud, or anything else that speaks it. |
+| `write/3` | Writes the bytes, if the precondition still holds. |
+
+### Sheetshow.Store: callbacks
+
+| | |
+| --- | --- |
+| `conditional_write?/1` | Whether this store can refuse a write whose precondition no longer… |
+| `exists?/1` | Whether the file is there at all. |
+| `read/1` | The bytes, and the version they were at. |
+| `write/3` | Writes the bytes, giving back the version they are now at. |
+
+### Sheetshow.Workbook
+
+| | |
+| --- | --- |
+| `google/2` | A workbook over one Google spreadsheet. |
+| `memory/1` | A workbook over a `Sheetshow.Memory`: the spreadsheet that needs no network. |
+| `titles/1` | The sheet titles the workbook knows about, sorted. |
+| `xlsx/2` | A workbook over an `.xlsx` file. |
+
+### Sheetshow.Xlsx
+
+| | |
+| --- | --- |
+| `decode/1` | Opens a package and reads every sheet, in one call. **+ !** |
+| `memory/1` | Every sheet, as a `Sheetshow.Memory`: the whole workbook in the shape the rest… |
+| `open/1` | Opens a package: its parts, its sheets, its shared strings and its styles. |
+| `titles/1` | The sheet titles, sorted, as every `titles/1` in Sheetshow answers. |
+
+## Credentials
+
+### Sheetshow.OAuth
+
+| | |
+| --- | --- |
+| `authorize/3` | Trades the code for a refresh token, and gives back the same account… **+ !** |
+| `challenge/1` | The challenge that goes in the consent URL: the verifier's SHA-256, which is… |
+| `code/2` | The code out of the address the browser landed on, having checked that the `state`… |
+| `consent_url/2` | The URL to send somebody to. |
+| `exchange_request/3` | The exchange request as data, where to post and what to post, for… |
+| `state/0` | Something random to send as `state` and compare when it comes back, so an answer… |
+| `verifier/0` | A PKCE code verifier: 86 characters of randomness to keep until `authorize/3`. |
+
+### Sheetshow.ServiceAccount
+
+| | |
+| --- | --- |
+| `assertion/2` | The signed JWT that asks for an access token. |
+| `from_file/1` | Reads a service-account key file. **+ !** |
+| `from_json/1` | Reads the JSON of a service-account key file. **+ !** |
+| `token_request/2` | The token request as data, where to post and what to post, for whichever… |
+
+### Sheetshow.Token
+
+| | |
+| --- | --- |
+| `authorization/1` | The `Authorization` header's value. |
+| `expired?/2` | Whether the token has run out. |
+| `from_response/2` | A token from what the token endpoint answered, with `expires_in`… **+ !** |
+| `new/3` | Builds a token. |
+
+### Sheetshow.UserAccount
+
+| | |
+| --- | --- |
+| `authorized?/1` | Whether this account can get a token on its own, that is, whether somebody… |
+| `from_file/1` | Reads an `authorized_user` credential file. **+ !** |
+| `from_json/1` | Reads the JSON of an `authorized_user` credential. **+ !** |
+| `new/3` | An account from the client id and secret of an app you registered in the Google… |
+| `to_json/1` | The account as `authorized_user` JSON, to write somewhere only you can read. |
+| `token_request/1` | The token request as data, where to post and what to post, for whichever… |
+
+## Errors
+
+### Sheetshow.CellError
+
+| | |
+| --- | --- |
+| `new/2` | Builds one from what Google calls it. |
+
+### Sheetshow.Error
+
+| | |
+| --- | --- |
+| `new/3` | Builds an error. |

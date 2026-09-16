@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# The integration tests are not here: they need the test Google account, and
+# `mix check.all` on the maintainer's machine is the gate for those. Everything
+# below is offline.
+jobs:
+  check:
+    name: check (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor mix.exs declares, and the parity toolchain.
+          #
+          # setup-beam fetches a precompiled OTP built for the runner image, and
+          # an old OTP may have no build for a new image. If the floor job dies
+          # at the setup step rather than in `mix check`, that is why: pin this
+          # one job to an older `runs-on`, or raise the floor OTP.
+          - elixir: "1.18.4"
+            otp: "25.3"
+          - elixir: "1.20.3"
+            otp: "29.0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+      - run: mix deps.get
+      - run: mix check
+
+  docs:
+    name: docs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20.3"
+          otp-version: "29.0"
+      - run: mix deps.get
+      - run: mix docs --warnings-as-errors
