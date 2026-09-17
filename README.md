@@ -18,7 +18,7 @@ a WebDAV server.
 
 ```elixir
 def deps do
-  [{:sheetshow, "~> 0.1.0"}]
+  [{:sheetshow, "~> 0.1.1"}]
 end
 ```
 

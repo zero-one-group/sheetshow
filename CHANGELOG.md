@@ -3,7 +3,7 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
-## Unreleased
+## 0.1.1 (2026-09-17)
 
 Fixes from a QA pass over 0.1.0, all in the `.xlsx` codec unless said otherwise:
 
