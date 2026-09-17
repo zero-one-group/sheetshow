@@ -13,11 +13,14 @@ defmodule Sheetshow.A1 do
 
   alias Sheetshow.Error
 
-  @plain_sheet ~r/^[A-Za-z_][A-Za-z0-9_]*$/
+  # `\z` rather than `$`: `$` also matches before a trailing newline, which
+  # would let "Costs\n" through as a plain name.
+  @plain_sheet ~r/^[A-Za-z_][A-Za-z0-9_]*\z/
   # A cell (letters and digits) or two endpoints around a colon. Letters alone
   # cannot be a reference, so `log` or `A` on their own name a sheet.
-  @ref_like ~r/^(\$?[A-Za-z]{1,3}\$?[0-9]+|\$?[A-Za-z]{0,3}\$?[0-9]*:\$?[A-Za-z]{0,3}\$?[0-9]*)$/
-  @ref ~r/^\$?([A-Za-z]{1,3})?\$?([1-9][0-9]*)?$/
+  @ref_like ~r/^(\$?[A-Za-z]{1,3}\$?[0-9]+|\$?[A-Za-z]{0,3}\$?[0-9]*:\$?[A-Za-z]{0,3}\$?[0-9]*)\z/
+  @ref ~r/^\$?([A-Za-z]{1,3})?\$?([1-9][0-9]*)?\z/
+  @letters ~r/^[A-Za-z]+\z/
 
   @doc """
   0-indexed column to letters.
@@ -48,7 +51,7 @@ defmodule Sheetshow.A1 do
   """
   @spec letters_to_col(String.t()) :: non_neg_integer()
   def letters_to_col(letters) when is_binary(letters) do
-    if letters == "" or not Regex.match?(~r/^[A-Za-z]+$/, letters) do
+    if letters == "" or not Regex.match?(@letters, letters) do
       raise ArgumentError, "expected column letters, got: #{inspect(letters)}"
     end
 

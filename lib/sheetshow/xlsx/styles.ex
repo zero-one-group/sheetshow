@@ -281,18 +281,15 @@ defmodule Sheetshow.Xlsx.Styles do
         |> bump_count(tag, length(elements))
         |> String.replace("</#{tag}>", added <> "</#{tag}>", global: false)
 
+      # Functions rather than replacement strings: a font name or a format
+      # code holding `\1` would otherwise be read as a backreference.
       Regex.match?(~r/<#{tag}\b[^>]*\/>/, xml) ->
-        String.replace(xml, ~r/<#{tag}\b[^>]*\/>/, open(tag, added, length(elements)),
-          global: false
-        )
+        opened = open(tag, added, length(elements))
+        Regex.replace(~r/<#{tag}\b[^>]*\/>/, xml, fn _ -> opened end, global: false)
 
       when_absent == :first ->
-        String.replace(
-          xml,
-          ~r/(<styleSheet\b[^>]*>)/,
-          "\\1" <> open(tag, added, length(elements)),
-          global: false
-        )
+        opened = open(tag, added, length(elements))
+        Regex.replace(~r/<styleSheet\b[^>]*>/, xml, fn root -> root <> opened end, global: false)
 
       true ->
         String.replace(
@@ -375,13 +372,20 @@ defmodule Sheetshow.Xlsx.Styles do
   defp event({:startElement, _uri, ~c"cellStyleXfs", _q, _attrs}, state),
     do: %{state | section: :style_xfs}
 
-  defp event({:startElement, _uri, ~c"font", _q, _attrs}, state), do: %{state | font: %{}}
+  # The differential formats conditional formatting uses hold <font> and <fill>
+  # elements of their own. They are not in the lists a cell indexes into, so
+  # counting them would send every style minted afterwards past the end.
+  defp event({:startElement, _uri, ~c"dxfs", _q, _attrs}, state), do: %{state | section: :dxfs}
+
+  defp event({:startElement, _uri, ~c"font", _q, _attrs}, %{section: :fonts} = state),
+    do: %{state | font: %{}}
 
   defp event({:endElement, _uri, ~c"font", _q}, %{font: font} = state) when is_map(font) do
     %{state | fonts: [font | state.fonts], font: nil}
   end
 
-  defp event({:startElement, _uri, ~c"fill", _q, _attrs}, state), do: %{state | fill: %{}}
+  defp event({:startElement, _uri, ~c"fill", _q, _attrs}, %{section: :fills} = state),
+    do: %{state | fill: %{}}
 
   defp event({:endElement, _uri, ~c"fill", _q}, %{fill: fill} = state) when is_map(fill) do
     %{state | fills: [fill | state.fills], fill: nil}

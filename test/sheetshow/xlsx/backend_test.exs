@@ -256,4 +256,109 @@ defmodule Sheetshow.Xlsx.BackendTest do
       assert {:error, %Error{reason: :invalid_zip}} = Sheetshow.connect(Workbook.xlsx(path))
     end
   end
+
+  # What Excel leaves in a file that a writer here has to carry through.
+  describe "a file Excel wrote" do
+    # A column filled down: the first cell holds the formula, the rest point at
+    # it. Made by rewriting one part of a file this library wrote, since
+    # neither openpyxl nor LibreOffice shares formulas and Excel is not here.
+    defp with_shared_formulas(path) do
+      cells =
+        Sheetshow.rows([[1, {:formula, "=A1*2"}], [2, nil], [3, nil]], sheet: "Costs")
+        |> Enum.reject(&is_nil(&1.value))
+
+      written(path, cells)
+
+      {:ok, package} = Xlsx.open(File.read!(path))
+      %{part: part} = Enum.find(package.book.sheets, &(&1.title == "Costs"))
+      {:ok, xml} = Zip.fetch(package.entries, part)
+
+      xml =
+        xml
+        |> String.replace("<f>A1*2</f>", ~s(<f t="shared" ref="B1:B3" si="0">A1*2</f>))
+        |> String.replace(
+          "<c r=\"A2\"><v>2</v></c>",
+          ~s(<c r="A2"><v>2</v></c><c r="B2"><f t="shared" si="0"/><v>4</v></c>)
+        )
+        |> String.replace(
+          "<c r=\"A3\"><v>3</v></c>",
+          ~s(<c r="A3"><v>3</v></c><c r="B3"><f t="shared" si="0"/><v>6</v></c>)
+        )
+
+      assert xml =~ ~s(<f t="shared" si="0"/>), "the fixture did not take"
+      {:ok, bin} = package.entries |> Zip.put(part, xml) |> Zip.write()
+      File.write!(path, bin)
+      Workbook.xlsx(path)
+    end
+
+    test "filled-down formulas read as the formula each cell holds", %{path: path} do
+      workbook = with_shared_formulas(path)
+
+      assert {:ok, cells} = Sheetshow.read_cells("Costs!B1:B3", workbook)
+
+      assert Enum.map(cells, & &1.value) == [
+               {:formula, "=A1*2"},
+               {:formula, "=A2*2"},
+               {:formula, "=A3*2"}
+             ]
+    end
+
+    test "and a write to the sheet leaves them as formulas of their own", %{path: path} do
+      workbook = with_shared_formulas(path)
+      {:ok, workbook} = Sheetshow.connect(workbook)
+
+      {:ok, workbook} =
+        [Sheetshow.Cell.new("Costs!D1", "touched")]
+        |> Sheetshow.plan!()
+        |> Sheetshow.run(workbook)
+
+      {:ok, package} = Xlsx.open(File.read!(path))
+      %{part: part} = Enum.find(package.book.sheets, &(&1.title == "Costs"))
+      {:ok, xml} = Zip.fetch(package.entries, part)
+
+      assert xml =~ "<f>A2*2</f>"
+      assert xml =~ "<f>A3*2</f>"
+      refute xml =~ "<f></f>"
+      refute xml =~ "shared"
+
+      assert {:ok, [[{:formula, "=A1*2"}], [{:formula, "=A2*2"}], [{:formula, "=A3*2"}]]} =
+               Sheetshow.read_rows("Costs!B1:B3", workbook)
+    end
+
+    # Conditional formatting keeps its fonts and fills under <dxfs>, beside the
+    # lists a cell indexes into, and they must not be counted with them: a
+    # style minted afterwards would point past the end of <fonts>.
+    test "conditional formatting does not push a new style past the font list", %{path: path} do
+      written(path, costs())
+
+      {:ok, package} = Xlsx.open(File.read!(path))
+      {:ok, styles} = Zip.fetch(package.entries, package.book.styles)
+
+      dxfs =
+        ~s(<dxfs count="1"><dxf><font><b/><color rgb="FFFF0000"/></font>) <>
+          ~s(<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/></patternFill></fill></dxf></dxfs>)
+
+      styles = String.replace(styles, "</cellStyles>", "</cellStyles>" <> dxfs)
+      {:ok, bin} = package.entries |> Zip.put(package.book.styles, styles) |> Zip.write()
+      File.write!(path, bin)
+
+      {:ok, workbook} = Sheetshow.connect(Workbook.xlsx(path))
+      cell = Sheetshow.Cell.new("Costs!A5", "x", %{italic: true, background: "#00FF00"})
+      {:ok, workbook} = [cell] |> Sheetshow.plan!() |> Sheetshow.run(workbook)
+
+      {:ok, package} = Xlsx.open(File.read!(path))
+      {:ok, styles} = Zip.fetch(package.entries, package.book.styles)
+      [fonts] = Regex.run(~r{<fonts.*?</fonts>}s, styles)
+      [fills] = Regex.run(~r{<fills.*?</fills>}s, styles)
+      [xf] = Regex.run(~r{<xf [^>]*applyFill="1"[^>]*>}, styles)
+      [_, font_id] = Regex.run(~r/fontId="(\d+)"/, xf)
+      [_, fill_id] = Regex.run(~r/fillId="(\d+)"/, xf)
+
+      assert String.to_integer(font_id) < length(Regex.scan(~r/<font>/, fonts))
+      assert String.to_integer(fill_id) < length(Regex.scan(~r/<fill>/, fills))
+
+      {:ok, [read]} = Sheetshow.read_cells("Costs!A5", workbook)
+      assert read.style == %{italic: true, background: "#00FF00"}
+    end
+  end
 end

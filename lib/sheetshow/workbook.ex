@@ -95,10 +95,12 @@ defmodule Sheetshow.Workbook do
   def xlsx(location, opts \\ [])
 
   def xlsx(%Store{} = store, opts) do
+    opts = Keyword.validate!(opts, create: false)
+
     %__MODULE__{
       backend: Sheetshow.Xlsx.Backend,
       ref: store,
-      meta: %{create: Keyword.get(opts, :create, false)}
+      meta: %{create: Keyword.fetch!(opts, :create)}
     }
   end
 

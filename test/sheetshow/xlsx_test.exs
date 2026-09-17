@@ -267,5 +267,108 @@ defmodule Sheetshow.XlsxTest do
       cells = with_sheet(~s(<row r="1"><c r="AB1"><v>1</v></c></row>))
       assert cells["AB1"].value == 1
     end
+
+    test "a rich inline string reads as one string" do
+      cells =
+        with_sheet(
+          ~s(<row r="1"><c r="A1" t="inlineStr"><is><r><rPr><b/></rPr><t>Bold</t></r>) <>
+            ~s(<r><t xml:space="preserve"> plain</t></r></is></c></row>)
+        )
+
+      assert cells["A1"].value == "Bold plain"
+    end
+
+    test "an empty formula element is no formula at all" do
+      cells = with_sheet(~s(<row r="1"><c r="A1"><f/><v>3</v></c></row>))
+      assert cells["A1"].value == 3
+    end
+  end
+
+  # Excel writes a column of filled-down formulas once: the first cell carries
+  # the text and a `ref`, the rest carry only `t="shared"` and the `si` that
+  # says which one. Before M8.12 those cells read as `{:formula, "="}` and were
+  # written back as `<f></f>`, which took the formulas out of the file.
+  describe "shared formulas" do
+    test "the cells below the first read as its formula moved down to them" do
+      cells =
+        with_sheet(
+          ~s(<row r="1"><c r="A1"><v>1</v></c><c r="B1"><f t="shared" ref="B1:B3" si="0">A1*2</f><v>2</v></c></row>) <>
+            ~s(<row r="2"><c r="A2"><v>2</v></c><c r="B2"><f t="shared" si="0"/><v>4</v></c></row>) <>
+            ~s(<row r="3"><c r="A3"><v>3</v></c><c r="B3"><f t="shared" si="0"/><v>6</v></c></row>)
+        )
+
+      assert cells["B1"].value == {:formula, "=A1*2"}
+      assert cells["B2"].value == {:formula, "=A2*2"}
+      assert cells["B3"].value == {:formula, "=A3*2"}
+      assert cells["B3"].meta.effective == 6
+    end
+
+    test "and across, when the range runs that way" do
+      cells =
+        with_sheet(
+          ~s(<row r="2"><c r="B2"><f t="shared" ref="B2:D2" si="3">$A2+B1</f><v>1</v></c>) <>
+            ~s(<c r="C2"><f t="shared" si="3"/><v>2</v></c>) <>
+            ~s(<c r="D2"><f t="shared" si="3"/><v>3</v></c></row>)
+        )
+
+      assert cells["C2"].value == {:formula, "=$A2+C1"}
+      assert cells["D2"].value == {:formula, "=$A2+D1"}
+    end
+
+    test "two groups on one sheet keep to their own si" do
+      cells =
+        with_sheet(
+          ~s(<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="0">B1</f></c>) <>
+            ~s(<c r="C1"><f t="shared" ref="C1:C2" si="1">D1*2</f></c></row>) <>
+            ~s(<row r="2"><c r="A2"><f t="shared" si="0"/></c><c r="C2"><f t="shared" si="1"/></c></row>)
+        )
+
+      assert cells["A2"].value == {:formula, "=B2"}
+      assert cells["C2"].value == {:formula, "=D2*2"}
+    end
+
+    test "a pointer to a formula the part never wrote keeps its cached value" do
+      cells = with_sheet(~s(<row r="2"><c r="B2"><f t="shared" si="9"/><v>4</v></c></row>))
+      assert cells["B2"].value == 4
+      assert cells["B2"].meta == %{}
+    end
+  end
+
+  # A writer may spell the worksheet's elements with a namespace prefix. The
+  # SAX events name elements without one, so such a sheet reads; but the
+  # writer here works on the part's text and looks for `<sheetData`, so it is
+  # marked read-only rather than written back with two sheetData elements.
+  describe "a worksheet with a namespace prefix" do
+    setup do
+      prefixed =
+        ~s(<?xml version="1.0" encoding="UTF-8"?>) <>
+          ~s(<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">) <>
+          ~s(<x:sheetData><x:row r="1"><x:c r="A1"><x:v>7</x:v></x:c></x:row></x:sheetData></x:worksheet>)
+
+      {:ok, entries} = Zip.read(fixture("xlsxwriter"))
+      {:ok, bin} = entries |> Zip.put("xl/worksheets/sheet1.xml", prefixed) |> Zip.write()
+      {:ok, package} = Xlsx.open(bin)
+      %{package: package}
+    end
+
+    test "reads", %{package: package} do
+      {:ok, sheet} = Xlsx.sheet(package, "Costs")
+      assert [%Cell{value: 7}] = sheet.cells
+      refute sheet.writable
+    end
+
+    test "but is refused a write, before anything is encoded", %{package: package} do
+      {:ok, sheet} = Xlsx.sheet(package, "Costs")
+
+      assert {:error, %Error{reason: :unsupported} = error} =
+               Xlsx.put_sheet(package, "Costs", sheet)
+
+      assert error.message =~ "namespace prefix"
+    end
+
+    test "an ordinary worksheet is writable", %{package: package} do
+      {:ok, sheet} = Xlsx.sheet(package, "log")
+      assert sheet.writable
+    end
   end
 end

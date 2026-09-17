@@ -192,8 +192,9 @@ defmodule Sheetshow.Schema do
       nil -> {:ok, false}
       true -> {:ok, true}
       false -> {:ok, false}
-      1 -> {:ok, true}
-      0 -> {:ok, false}
+      # A backend that keeps floats hands 1 back as 1.0.
+      number when number == 1 -> {:ok, true}
+      number when number == 0 -> {:ok, false}
       string when is_binary(string) -> from_word(String.downcase(string))
       _other -> :error
     end
@@ -260,6 +261,10 @@ defmodule Sheetshow.Schema do
 
   defp cast_value(value, :json) when is_binary(value), do: parsed(JSON.decode(value))
 
+  # A JSON scalar somebody typed by hand arrives as the number or boolean Sheets
+  # made of it, which is what decoding the text would have given anyway.
+  defp cast_value(value, :json) when is_number(value) or is_boolean(value), do: {:ok, value}
+
   defp cast_value(_value, _type), do: :error
 
   # An empty cell and a cell holding "" are the same thing to a reader.
@@ -294,7 +299,6 @@ defmodule Sheetshow.Schema do
   end
 
   defp parsed({:ok, value}), do: {:ok, value}
-  defp parsed({:ok, value, _offset}), do: {:ok, value}
   defp parsed(_other), do: :error
 
   defp numeric?(string) do

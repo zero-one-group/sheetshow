@@ -83,6 +83,7 @@ defmodule Sheetshow.ServiceAccount do
   """
   @spec assertion(t(), keyword()) :: String.t()
   def assertion(%__MODULE__{} = account, opts \\ []) do
+    opts = Keyword.validate!(opts, [:scopes, :lifetime, :now])
     issued_at = opts |> Keyword.get(:now, DateTime.utc_now()) |> DateTime.to_unix()
     lifetime = Keyword.get(opts, :lifetime, @lifetime)
 

@@ -43,6 +43,10 @@ defmodule Sheetshow do
         ]
   @type plan_opts :: [sheet: String.t(), existing_sheets: [String.t()]]
 
+  # An option nobody reads is a typo nobody hears about, so every option list
+  # here is checked, as they are everywhere else in the library.
+  @layout_options [:row, :col, :sheet, :style]
+
   @doc """
   Turns cells into a plan: the ops that write them, in the order they are to be
   carried out.
@@ -284,9 +288,12 @@ defmodule Sheetshow do
   """
   @spec records([map()], [term()], keyword()) :: cells()
   def records(records, keys, opts \\ []) when is_list(records) and is_list(keys) do
+    opts = Keyword.validate!(opts, [:header | @layout_options])
+
     header =
       case Keyword.get(opts, :header) do
         nil -> []
+        false -> []
         true -> [Enum.map(keys, &to_string/1)]
         labels when is_list(labels) -> [labels]
       end
@@ -434,6 +441,8 @@ defmodule Sheetshow do
     do: cells |> Enum.map(& &1.coord.col) |> Enum.max(fn -> nil end)
 
   defp layout(opts) do
+    opts = Keyword.validate!(opts, @layout_options)
+
     {Keyword.get(opts, :row, 0), Keyword.get(opts, :col, 0), Keyword.get(opts, :sheet),
      Keyword.get(opts, :style, %{})}
   end

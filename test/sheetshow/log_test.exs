@@ -26,6 +26,14 @@ defmodule Sheetshow.LogTest do
     end
   end
 
+  describe "Event.new/2" do
+    test "an option it does not take is a mistake worth raising on" do
+      assert_raise ArgumentError, ~r/unknown keys \[:ids\]/, fn ->
+        Event.new(%{item: "x"}, ids: "x")
+      end
+    end
+  end
+
   describe "header and create" do
     test "the header is id, deleted, then the schema in its own order" do
       assert Log.columns(log()) == ["id", "deleted", "item", "cost"]

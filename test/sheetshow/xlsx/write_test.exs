@@ -236,6 +236,104 @@ defmodule Sheetshow.Xlsx.WriteTest do
     end
   end
 
+  # The string table is spliced, not rebuilt, because an <si> can say more than
+  # its text and the cells pointing at it may be on sheets nobody touched.
+  describe "the string table as it was" do
+    defp with_strings(sst) do
+      {:ok, entries} = Zip.read(fixture("xlsxwriter"))
+      {:ok, bin} = entries |> Zip.put("xl/sharedStrings.xml", sst) |> Zip.write()
+      {:ok, package} = Xlsx.open(bin)
+      package
+    end
+
+    defp sst(inner, count) do
+      ~s(<?xml version="1.0" encoding="UTF-8" standalone="yes"?>) <>
+        ~s(<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ) <>
+        ~s(count="#{count}" uniqueCount="#{count}">#{inner}</sst>)
+    end
+
+    test "a run of bold inside a string survives a new string being added" do
+      rich =
+        ~s(<si><r><rPr><b/></rPr><t>Bold</t></r><r><t xml:space="preserve"> plain</t></r></si>)
+
+      package = with_strings(sst(rich <> "<si><t>x</t></si>", 2))
+      sheet = costs(package)
+
+      added = Cell.new(Coord.new(9, 0, "Costs"), "brand new")
+      {bin, reopened} = rewritten(package, "Costs", %{sheet | cells: sheet.cells ++ [added]})
+      written = part(bin, "xl/sharedStrings.xml")
+
+      assert String.contains?(written, rich)
+      assert written =~ ~s(count="3" uniqueCount="3")
+      assert String.ends_with?(written, ~s(<si><t xml:space="preserve">brand new</t></si></sst>))
+      assert by_ref(costs(reopened))["A10"].value == "brand new"
+    end
+
+    test "an empty table that was self-closed is opened up" do
+      package =
+        with_strings(
+          ~s(<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"/>)
+        )
+
+      sheet = costs(package)
+      cells = [Cell.new(Coord.new(0, 0, "Costs"), "only")]
+      {bin, reopened} = rewritten(package, "Costs", %{sheet | cells: cells})
+
+      assert part(bin, "xl/sharedStrings.xml") =~
+               ~s(count="1" uniqueCount="1"><si><t xml:space="preserve">only</t></si></sst>)
+
+      assert by_ref(costs(reopened))["A1"].value == "only"
+    end
+
+    test "a string holding what a regex would read as a backreference" do
+      package = opened("xlsxwriter")
+      sheet = costs(package)
+      added = Cell.new(Coord.new(9, 0, "Costs"), ~S(C:\1\0 and \g{1}))
+      {_bin, reopened} = rewritten(package, "Costs", %{sheet | cells: sheet.cells ++ [added]})
+
+      assert by_ref(costs(reopened))["A10"].value == ~S(C:\1\0 and \g{1})
+    end
+  end
+
+  describe "what is beside the cells" do
+    test "two neighbouring columns of different widths are two col elements" do
+      package = opened("openpyxl")
+      sheet = costs(package)
+      widths = %{0 => 100, 1 => 100, 2 => 150}
+      {bin, reopened} = rewritten(package, "Costs", %{sheet | col_widths: widths})
+
+      cols = part(bin, "xl/worksheets/sheet1.xml")
+      assert cols =~ ~s(<col min="1" max="2" )
+      assert cols =~ ~s(<col min="3" max="3" )
+
+      back = costs(reopened)
+      assert_in_delta back.col_widths[1], 100, 1
+      assert_in_delta back.col_widths[2], 150, 1
+    end
+
+    test "a sheet emptied of cells loses its dimension hint and its cols" do
+      package = opened("openpyxl")
+      sheet = costs(package)
+      {bin, reopened} = rewritten(package, "Costs", %{sheet | cells: [], col_widths: %{}})
+
+      xml = part(bin, "xl/worksheets/sheet1.xml")
+      refute xml =~ "<dimension"
+      refute xml =~ "<cols"
+      assert xml =~ "<sheetData></sheetData>"
+      assert costs(reopened).cells == []
+    end
+
+    test "vertical alignment, underline and strikethrough go down and come back" do
+      package = opened("openpyxl")
+      sheet = costs(package)
+      style = %{vertical: :middle, horizontal: :center, underline: true, strikethrough: true}
+      added = Cell.new(Coord.new(9, 0, "Costs"), "x", style)
+      {_bin, reopened} = rewritten(package, "Costs", %{sheet | cells: sheet.cells ++ [added]})
+
+      assert by_ref(costs(reopened))["A10"].style == style
+    end
+  end
+
   describe "passthrough" do
     setup do
       # A worksheet carrying every sibling of <sheetData> that a rewrite would
@@ -349,6 +447,33 @@ defmodule Sheetshow.Xlsx.WriteTest do
 
       {:ok, reopened} = Xlsx.open(bin)
       assert Xlsx.titles(reopened) == ["Costs"]
+    end
+
+    # LibreOffice writes the apostrophe in a sheet's name as &apos;, which
+    # Sheetshow's own escaping never does, so the <sheet> element is found by
+    # its relationship id rather than by the text of its name.
+    test "one whose name the writer escaped its own way still goes whole" do
+      {:ok, package} = Xlsx.add_sheet(Xlsx.new(), "Q1's costs")
+      {:ok, bin} = Xlsx.encode(package)
+      {:ok, entries} = Zip.read(bin)
+      {:ok, workbook_xml} = Zip.fetch(entries, "xl/workbook.xml")
+      assert workbook_xml =~ ~s(name="Q1's costs")
+
+      escaped = String.replace(workbook_xml, ~s(name="Q1's costs"), ~s(name="Q1&apos;s costs"))
+      {:ok, bin} = entries |> Zip.put("xl/workbook.xml", escaped) |> Zip.write()
+      {:ok, package} = Xlsx.open(bin)
+      assert Xlsx.titles(package) == ["Q1's costs", "Sheet1"]
+
+      %{part: part, rid: rid} = Enum.find(package.book.sheets, &(&1.title == "Q1's costs"))
+      {:ok, package} = Xlsx.delete_sheet(package, "Q1's costs")
+      {:ok, bin} = Xlsx.encode(package)
+
+      refute part(bin, "xl/workbook.xml") =~ ~s(:id="#{rid}")
+      refute part(bin, "xl/workbook.xml") =~ "Q1&apos;s"
+      refute part(bin, "xl/_rels/workbook.xml.rels") =~ ~s(Id="#{rid}")
+      refute part(bin, "[Content_Types].xml") =~ part
+      assert {:ok, reopened} = Xlsx.open(bin)
+      assert Xlsx.titles(reopened) == ["Sheet1"]
     end
 
     test "one that is not there is refused" do

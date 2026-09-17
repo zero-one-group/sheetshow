@@ -338,6 +338,18 @@ defmodule Sheetshow.Store.WebDAVTest do
     end
   end
 
+  describe "options nobody reads" do
+    test "are refused when the store is built, not when the file is fetched" do
+      assert_raise ArgumentError, ~r/unknown keys \[:user\]/, fn ->
+        Store.webdav("https://example.com/x.xlsx", user: "user", password: "pw")
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:timout\]/, fn ->
+        Store.nextcloud("https://c.example.com", "user", "x.xlsx", http: [timout: 1])
+      end
+    end
+  end
+
   describe "a store's secrets" do
     test "do not print, because a store is a value people pass around" do
       store = Store.webdav("https://example.com/x.xlsx", username: "user", password: "hunter2")

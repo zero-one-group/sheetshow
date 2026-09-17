@@ -16,7 +16,7 @@ defmodule Sheetshow.Client do
   client's: see `Sheetshow.Workbook`.
   """
 
-  alias Sheetshow.{Google, ServiceAccount, Token, UserAccount}
+  alias Sheetshow.{Google, HTTP, ServiceAccount, Token, UserAccount}
 
   @base_url "https://sheets.googleapis.com"
 
@@ -52,13 +52,16 @@ defmodule Sheetshow.Client do
   """
   @spec new(String.t(), keyword()) :: t()
   def new(spreadsheet_id, opts \\ []) when is_binary(spreadsheet_id) do
+    opts = Keyword.validate!(opts, [:credentials, :token, :scopes, :base_url, :http])
+    http = Keyword.validate!(Keyword.get(opts, :http, []), HTTP.options())
+
     %__MODULE__{
       spreadsheet_id: spreadsheet_id,
       credentials: Keyword.get(opts, :credentials),
       token: Keyword.get(opts, :token),
       scopes: Keyword.get(opts, :scopes, Google.default_scopes()),
       base_url: Keyword.get(opts, :base_url, @base_url),
-      http: Keyword.get(opts, :http, [])
+      http: http
     }
   end
 

@@ -34,6 +34,20 @@ defmodule SheetshowTest do
       assert records([], [:item]) == []
       assert to_rows(records([], [:item], header: true)) == [["item"]]
     end
+
+    test "header: false is the same as leaving the header out" do
+      assert to_rows(records([%{a: 1}], [:a], header: false)) == [[1]]
+    end
+
+    test "an option a builder does not take is a mistake worth raising on" do
+      assert_raise ArgumentError, ~r/unknown keys \[:sheets\]/, fn -> row([1], sheets: "S") end
+      assert_raise ArgumentError, ~r/unknown keys \[:styl\]/, fn -> col([1], styl: %{}) end
+      assert_raise ArgumentError, ~r/unknown keys \[:rows\]/, fn -> rows([[1]], rows: 2) end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:headers\]/, fn ->
+        records([%{a: 1}], [:a], headers: true)
+      end
+    end
   end
 
   describe "to_rows" do

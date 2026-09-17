@@ -130,6 +130,70 @@ defmodule Sheetshow.Xlsx.StylesTest do
       assert Styles.fetch(styles, 0).style == %{}
       assert Styles.fetch(styles, 1).style == %{background: "#00FF00"}
     end
+
+    test "the fonts and fills under dxfs are conditional formatting's, not the lists" do
+      xml = """
+      <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+      <fonts count="1"><font><sz val="11"/></font></fonts>
+      <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+      <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" xfId="0"/></cellXfs>
+      <dxfs count="1"><dxf><font><b/><color rgb="FFFF0000"/></font>
+      <fill><patternFill patternType="solid"><fgColor rgb="FFFFFF00"/></patternFill></fill></dxf></dxfs>
+      </styleSheet>
+      """
+
+      {:ok, styles} = Styles.parse(xml)
+      assert styles.counts == %{fonts: 1, fills: 2, xfs: 1}
+
+      {index, styles} = Styles.put(styles, %{bold: true, background: "#00FF00"})
+      written = IO.iodata_to_binary(Styles.render(styles))
+
+      assert index == 1
+      assert written =~ ~s(<fonts count="2">)
+      assert written =~ ~s(<fills count="3">)
+      assert written =~ ~s(fontId="1" fillId="2")
+      # and the dxf itself is still there, untouched
+      assert written =~ ~s(<dxfs count="1"><dxf><font><b/><color rgb="FFFF0000"/></font>)
+    end
+  end
+
+  describe "splicing into the original" do
+    test "a font name or a format code that a regex would read as a backreference" do
+      {index, styles} =
+        Styles.put(Styles.new(), %{font_family: ~S(Fo\1nt), number_format: ~S(0\1)})
+
+      written = IO.iodata_to_binary(Styles.render(styles))
+
+      assert written =~ ~S(<name val="Fo\1nt"/>)
+      assert written =~ ~S(formatCode="0\1")
+
+      assert Styles.fetch(styles, index).style == %{
+               font_family: ~S(Fo\1nt),
+               number_format: ~S(0\1)
+             }
+    end
+
+    test "a list that was self-closed is opened up, as openpyxl leaves numFmts" do
+      xml = """
+      <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+      <numFmts count="0"/>
+      <fonts count="1"><font/></fonts><fills count="2"><fill/><fill/></fills>
+      <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" xfId="0"/></cellXfs>
+      </styleSheet>
+      """
+
+      {:ok, styles} = Styles.parse(xml)
+      {index, styles} = Styles.put(styles, %{number_format: "yyyy-mm-dd"})
+      written = IO.iodata_to_binary(Styles.render(styles))
+
+      assert written =~
+               ~s(<numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts>)
+
+      assert written =~
+               ~s(<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>)
+
+      assert Styles.fetch(styles, index).kind == :date
+    end
   end
 
   describe "shared strings" do

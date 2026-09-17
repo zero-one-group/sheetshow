@@ -37,6 +37,8 @@ defmodule Sheetshow.Token do
   """
   @spec new(String.t(), DateTime.t(), keyword()) :: t()
   def new(access_token, %DateTime{} = expires_at, opts \\ []) when is_binary(access_token) do
+    opts = Keyword.validate!(opts, [:type, :scopes])
+
     %__MODULE__{
       access_token: access_token,
       expires_at: expires_at,
@@ -62,6 +64,7 @@ defmodule Sheetshow.Token do
   """
   @spec from_response(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def from_response(response, opts \\ []) when is_map(response) do
+    opts = Keyword.validate!(opts, [:now, :scopes])
     now = Keyword.get(opts, :now, DateTime.utc_now())
 
     case response do

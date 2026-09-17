@@ -60,6 +60,14 @@ defmodule Sheetshow.StyleTest do
     refute Style.valid?(nil)
   end
 
+  test "a colour is six hex digits and nothing after them" do
+    assert {:error, %Sheetshow.Error{details: %{key: :color}}} =
+             Style.validate(%{color: "#FF8800\n"})
+
+    assert {:error, %Sheetshow.Error{details: %{key: :background}}} =
+             Style.validate(%{background: "#FF88001"})
+  end
+
   test "colours round-trip through rgb" do
     for hex <- ["#000000", "#FFFFFF", "#FF8800", "#0A0B0C"] do
       assert hex |> Style.hex_to_rgb() |> Style.rgb_to_hex() == hex

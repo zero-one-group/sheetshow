@@ -137,20 +137,25 @@ defmodule Sheetshow.Xlsx.Workbook do
     }
   end
 
-  @doc "Takes a sheet back out of all three."
+  @doc """
+  Takes a sheet back out of all three.
+
+  The `<sheet>` element is found by its relationship id rather than its name:
+  a writer may have spelled an apostrophe in the name as `&apos;`, and the id
+  is the one thing about the element that is written exactly one way.
+  """
   @spec delete_sheet(
           %{workbook: binary(), rels: binary(), types: binary()},
-          String.t(),
           String.t(),
           String.t()
         ) ::
           %{workbook: binary(), rels: binary(), types: binary()}
-  def delete_sheet(parts, title, part, rid) do
+  def delete_sheet(parts, part, rid) do
     %{
       workbook:
         String.replace(
           parts.workbook,
-          ~r{<sheet\b[^>]*name="#{Regex.escape(Xml.escape(title))}"[^>]*/>},
+          ~r{<sheet\b[^>]*\s[\w.-]+:id="#{Regex.escape(rid)}"[^>]*/>},
           ""
         ),
       rels:
@@ -174,18 +179,20 @@ defmodule Sheetshow.Xlsx.Workbook do
     }
   end
 
+  # Functions rather than replacement strings where the pattern is a regex: a
+  # title holding `\1` would otherwise be read as a backreference.
   defp insert_sheet(xml, element) do
     cond do
       String.contains?(xml, "</sheets>") ->
         String.replace(xml, "</sheets>", element <> "</sheets>", global: false)
 
       Regex.match?(~r{<sheets\s*/>}, xml) ->
-        String.replace(xml, ~r{<sheets\s*/>}, "<sheets>#{element}</sheets>", global: false)
+        wrapped = "<sheets>#{element}</sheets>"
+        Regex.replace(~r{<sheets\s*/>}, xml, fn _ -> wrapped end, global: false)
 
       true ->
-        String.replace(xml, ~r{(<workbook\b[^>]*>)}, "\\1<sheets>#{element}</sheets>",
-          global: false
-        )
+        wrapped = "<sheets>#{element}</sheets>"
+        Regex.replace(~r{<workbook\b[^>]*>}, xml, &(&1 <> wrapped), global: false)
     end
   end
 

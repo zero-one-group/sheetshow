@@ -135,6 +135,12 @@ defmodule Sheetshow.ServiceAccountTest do
     assert %{claims: %{"iat" => 1_789_200_000}} = parts(request.form.assertion)
   end
 
+  test "an option assertion does not take is refused", %{pkcs1: pem} do
+    assert_raise ArgumentError, ~r/unknown keys \[:scope\]/, fn ->
+      ServiceAccount.assertion(account(pem), scope: ["a"])
+    end
+  end
+
   test "inspecting an account keeps the key to itself", %{pkcs1: pem} do
     shown = inspect(account(pem))
 

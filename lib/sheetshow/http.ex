@@ -16,6 +16,12 @@ defmodule Sheetshow.HTTP do
 
   @type method :: :get | :head | :post | :put | :delete
 
+  @options [:timeout, :connect_timeout, :ssl]
+
+  @doc "The options a client's `:http` list may hold, for the callers that check theirs."
+  @spec options() :: [atom()]
+  def options, do: @options
+
   @spec request(method(), String.t(), [{String.t(), String.t()}], binary() | nil, keyword()) ::
           {:ok, response()} | {:error, Error.t()}
   def request(method, url, headers, body \\ nil, opts \\ []) do

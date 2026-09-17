@@ -92,6 +92,8 @@ defmodule Sheetshow.Store do
   """
   @spec webdav(String.t(), keyword()) :: t()
   def webdav(url, options \\ []) when is_binary(url) do
+    options = Keyword.validate!(options, [:username, :password, :headers, :http])
+    Keyword.validate!(Keyword.get(options, :http, []), Sheetshow.HTTP.options())
     %__MODULE__{module: Sheetshow.Store.WebDAV, location: url, options: options}
   end
 
