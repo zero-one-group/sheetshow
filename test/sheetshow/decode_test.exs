@@ -132,6 +132,78 @@ defmodule Sheetshow.DecodeTest do
       assert Google.decode(%{}) == []
       assert Google.decode(%{"sheets" => [%{"properties" => %{"title" => "Costs"}}]}) == []
     end
+
+    # A cell in a column somebody formatted as a whole comes back with an
+    # effectiveFormat and nothing else; nothing was entered there and nothing
+    # was formatted, so it is as empty as `{}`.
+    test "a cell that only inherits a format is not a cell" do
+      values = [
+        %{
+          "effectiveFormat" => %{"numberFormat" => %{"type" => "DATE", "pattern" => "yyyy-mm-dd"}}
+        },
+        %{"userEnteredValue" => %{"numberValue" => 1}}
+      ]
+
+      assert [only] = Google.decode(answer(values))
+      assert Coord.to_a1(only.coord) == "Costs!B1"
+    end
+  end
+
+  test "a colour component Google left out is zero" do
+    data = %{
+      "userEnteredValue" => %{"stringValue" => "x"},
+      "userEnteredFormat" => %{
+        "backgroundColorStyle" => %{"rgbColor" => %{"red" => 1}},
+        "textFormat" => %{
+          "foregroundColorStyle" => %{"rgbColor" => %{"blue" => 1, "green" => 0.5}}
+        }
+      }
+    }
+
+    assert one(data).style == %{background: "#FF0000", color: "#0080FF"}
+  end
+
+  test "a theme colour is not a colour we can name, so it is left out" do
+    data = %{
+      "userEnteredValue" => %{"stringValue" => "x"},
+      "userEnteredFormat" => %{"backgroundColorStyle" => %{"themeColor" => "ACCENT1"}}
+    }
+
+    assert one(data).style == %{}
+  end
+
+  test "every style key makes the round trip it was encoded from" do
+    style = %{
+      bold: true,
+      italic: false,
+      underline: true,
+      strikethrough: true,
+      font_size: 12,
+      font_family: "Roboto",
+      color: "#FF8800",
+      background: "#FFFFFF",
+      horizontal: :center,
+      vertical: :middle,
+      wrap: :wrap,
+      number_format: "0.00%"
+    }
+
+    assert Enum.sort(Map.keys(style)) ==
+             Enum.sort(Sheetshow.Style.keys() -- [:col_width, :row_height])
+
+    written = Cell.new("Costs!A1", 0.22, style)
+    op = Sheetshow.Op.PutCells.new([written], "Costs")
+
+    %{requests: [%{updateCells: %{rows: [%{values: [encoded]}]}}]} =
+      Google.encode!([op], %{"Costs" => 0})
+
+    data = %{
+      "userEnteredValue" => %{"numberValue" => 0.22},
+      "userEnteredFormat" => stringify(encoded.userEnteredFormat)
+    }
+
+    assert [read] = Google.decode(answer([data]))
+    assert read.style == written.style
   end
 
   test "a style makes the round trip it was encoded from" do

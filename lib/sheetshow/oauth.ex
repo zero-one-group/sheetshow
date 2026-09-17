@@ -60,6 +60,9 @@ defmodule Sheetshow.OAuth do
 
   @auth_uri "https://accounts.google.com/o/oauth2/v2/auth"
 
+  @consent_options [:redirect_uri, :scopes, :state, :verifier, :access_type, :prompt, :login_hint]
+  @exchange_options [:redirect_uri, :verifier, :http]
+
   @doc """
   A PKCE code verifier: 86 characters of randomness to keep until `authorize/3`.
 
@@ -111,6 +114,7 @@ defmodule Sheetshow.OAuth do
   """
   @spec consent_url(UserAccount.t(), keyword()) :: String.t()
   def consent_url(%UserAccount{} = account, opts) do
+    opts = Keyword.validate!(opts, @consent_options)
     redirect_uri = Keyword.get(opts, :redirect_uri) || raise_no_redirect()
 
     query =
@@ -187,6 +191,7 @@ defmodule Sheetshow.OAuth do
           form: map()
         }
   def exchange_request(code, %UserAccount{} = account, opts) when is_binary(code) do
+    opts = Keyword.validate!(opts, @exchange_options)
     redirect_uri = Keyword.get(opts, :redirect_uri) || raise_no_redirect()
 
     form =
@@ -224,6 +229,8 @@ defmodule Sheetshow.OAuth do
   @spec authorize(String.t(), UserAccount.t(), keyword()) ::
           {:ok, UserAccount.t()} | {:error, Error.t()}
   def authorize(code, %UserAccount{} = account, opts) when is_binary(code) do
+    opts = Keyword.validate!(opts, @exchange_options)
+
     Google.Backend.exchange(
       exchange_request(code, account, opts),
       account,

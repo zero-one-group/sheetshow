@@ -27,6 +27,10 @@ defmodule Sheetshow.A1Test do
       end
     end
 
+    test "letters_to_col rejects a trailing newline as it rejects a digit" do
+      assert_raise ArgumentError, fn -> A1.letters_to_col("AB\n") end
+    end
+
     test "letters_to_col rejects anything but letters" do
       for bad <- ["", "A1", "$A", "A-B", " "] do
         assert_raise ArgumentError, fn -> A1.letters_to_col(bad) end
@@ -58,6 +62,11 @@ defmodule Sheetshow.A1Test do
       for name <- ["log", "A", "Costs", "raw_2024"], do: assert(A1.quote_sheet(name) == name)
     end
 
+    test "a trailing newline is not part of a plain name" do
+      assert A1.quote_sheet("Costs\n") == "'Costs\n'"
+      refute A1.ref_like?("A1\n")
+    end
+
     test "split_sheet errors" do
       for bad <- ["!A1", "'Costs", "''!A1", "'Costs'!A1!B2"] do
         assert {:error, %Sheetshow.Error{reason: :invalid_a1}} = A1.split_sheet(bad)
@@ -71,7 +80,7 @@ defmodule Sheetshow.A1Test do
     end
 
     test "rejects malformed endpoints" do
-      for bad <- ["", "$", "A0", "A01", "1A", "AAAA1", "A1B", "A 1"] do
+      for bad <- ["", "$", "A0", "A01", "1A", "AAAA1", "A1B", "A 1", "A1\n", "\nA1"] do
         assert :error = A1.parse_ref(bad)
       end
     end

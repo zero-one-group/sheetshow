@@ -160,6 +160,20 @@ defmodule Sheetshow.OAuthTest do
 
       assert request.form.code_verifier == "v"
     end
+
+    test "an option nobody reads is refused, here and at the consent screen" do
+      assert_raise ArgumentError, ~r/unknown keys \[:verifer\]/, fn ->
+        OAuth.exchange_request("4/abc", account(), redirect_uri: @redirect, verifer: "v")
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:redirect\]/, fn ->
+        OAuth.consent_url(account(), redirect: @redirect)
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:refresh\]/, fn ->
+        UserAccount.new(@id, @secret, refresh: "1//r")
+      end
+    end
   end
 
   describe "UserAccount" do

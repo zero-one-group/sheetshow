@@ -57,6 +57,8 @@ defmodule Sheetshow.UserAccount do
   @spec new(String.t(), String.t(), keyword()) :: t()
   def new(client_id, client_secret, opts \\ [])
       when is_binary(client_id) and is_binary(client_secret) do
+    opts = Keyword.validate!(opts, [:token_uri, :refresh_token])
+
     %__MODULE__{
       client_id: client_id,
       client_secret: client_secret,

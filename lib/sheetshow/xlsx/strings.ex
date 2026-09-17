@@ -8,13 +8,14 @@ defmodule Sheetshow.Xlsx.Strings do
 
   alias Sheetshow.Xlsx.Xml
 
-  defstruct table: {}, index: %{}, added: [], shared?: false
+  defstruct table: {}, index: %{}, added: [], shared?: false, source: nil
 
   @type t :: %__MODULE__{
           table: tuple(),
           index: %{String.t() => non_neg_integer()},
           added: [String.t()],
-          shared?: boolean()
+          shared?: boolean(),
+          source: binary() | nil
         }
 
   @doc "The empty table, for a workbook with no sharedStrings.xml."
@@ -66,7 +67,8 @@ defmodule Sheetshow.Xlsx.Strings do
          # First occurrence wins, so writing a string the table already holds
          # points at the one already there rather than adding a duplicate.
          index: strings |> Enum.with_index() |> Enum.reverse() |> Map.new(),
-         shared?: true
+         shared?: true,
+         source: xml
        }}
     end
   end
@@ -108,21 +110,76 @@ defmodule Sheetshow.Xlsx.Strings do
   def added?(%__MODULE__{added: added}), do: added != []
 
   @doc """
-  sharedStrings.xml as it should now be written: everything that was there, in
-  the order it was there, and whatever `put/2` appended after it.
+  sharedStrings.xml as it should now be written: the part as it was, with
+  whatever `put/2` appended spliced in before `</sst>` and the counts brought
+  up to date.
+
+  Spliced rather than rebuilt, because an `<si>` can carry more than its text:
+  a run of bold in the middle of a cell, a phonetic hint beside it. Rebuilding
+  the table from the strings we read would flatten every one of them, in every
+  sheet, the first time a new string was written anywhere.
   """
   @spec render(t()) :: iodata()
-  def render(%__MODULE__{} = strings) do
-    all = Tuple.to_list(strings.table) ++ Enum.reverse(strings.added)
-    count = length(all)
+  def render(%__MODULE__{source: nil} = strings) do
+    added = Enum.reverse(strings.added)
+    count = tuple_size(strings.table) + length(added)
 
     [
       ~s(<?xml version="1.0" encoding="UTF-8" standalone="yes"?>),
       ~s(<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ),
       ~s(count="#{count}" uniqueCount="#{count}">),
-      Enum.map(all, &[~s(<si><t xml:space="preserve">), Xml.escape(&1), "</t></si>"]),
+      items(added),
       "</sst>"
     ]
+  end
+
+  def render(%__MODULE__{source: source} = strings) do
+    added = Enum.reverse(strings.added)
+    spliced = IO.iodata_to_binary(items(added))
+
+    source
+    |> bump("count", length(added))
+    |> bump("uniqueCount", length(added))
+    |> splice(spliced)
+  end
+
+  defp items(strings) do
+    Enum.map(strings, &[~s(<si><t xml:space="preserve">), Xml.escape(&1), "</t></si>"])
+  end
+
+  # `count` is how often the sheets point into the table and `uniqueCount` how
+  # many entries it has; a new entry adds one to each, near enough, and a file
+  # that never wrote the attribute does not gain it.
+  defp bump(xml, attribute, added) do
+    Regex.replace(
+      ~r/(<sst\b[^>]*?\s#{attribute}=")(\d+)(")/,
+      xml,
+      fn _, before, n, after_ ->
+        before <> Integer.to_string(String.to_integer(n) + added) <> after_
+      end,
+      global: false
+    )
+  end
+
+  defp splice(xml, added) do
+    cond do
+      String.contains?(xml, "</sst>") ->
+        String.replace(xml, "</sst>", added <> "</sst>", global: false)
+
+      # An empty table, self-closed. A function rather than a replacement
+      # string, because a string value holding `\1` would otherwise be read as
+      # a backreference.
+      Regex.match?(~r{<sst\b[^>]*/>}, xml) ->
+        Regex.replace(
+          ~r{(<sst\b[^>]*?)/>},
+          xml,
+          fn _, open -> open <> ">" <> added <> "</sst>" end,
+          global: false
+        )
+
+      true ->
+        xml
+    end
   end
 
   defp event({:startElement, _uri, ~c"si", _q, _attrs}, state), do: %{state | current: []}

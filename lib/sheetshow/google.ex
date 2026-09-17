@@ -186,7 +186,7 @@ defmodule Sheetshow.Google do
         block <- Map.get(sheet, "data", []),
         {row, down} <- Enum.with_index(Map.get(block, "rowData", [])),
         {data, across} <- Enum.with_index(Map.get(row, "values", [])),
-        data != %{} do
+        cell?(data) do
       cell(
         data,
         Coord.new(
@@ -197,6 +197,13 @@ defmodule Sheetshow.Google do
       )
     end
   end
+
+  # An empty cell is `{}`, but a cell that only inherits a format from its
+  # column arrives as an `effectiveFormat` and nothing else, and that is not a
+  # cell either: nothing was entered and nothing was formatted.
+  @cell_keys ~w(userEnteredValue userEnteredFormat effectiveValue formattedValue)
+
+  defp cell?(data), do: Enum.any?(@cell_keys, &Map.has_key?(data, &1))
 
   defp encode_op(%Op.AddSheet{title: title}, {ids, requests}) do
     if Map.has_key?(ids, title) do

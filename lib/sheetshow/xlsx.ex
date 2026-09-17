@@ -219,6 +219,19 @@ defmodule Sheetshow.Xlsx do
       nil ->
         {:error, unknown(package, title)}
 
+      # See `Sheetshow.Xlsx.Sheet.parse/4`: a worksheet written with a
+      # namespace prefix can be read but not put back, and saying so beats a
+      # part with two `sheetData` elements in it.
+      %{part: part} when not sheet.writable ->
+        {:error,
+         Error.new(
+           :unsupported,
+           "#{part} spells its elements with a namespace prefix, which Sheetshow reads " <>
+             "but does not write: the sheet #{inspect(title)} is read-only here",
+           part: part,
+           sheet: title
+         )}
+
       %{part: part} ->
         {xml, strings, styles} = Sheet.render(sheet, package.strings, package.styles)
 
@@ -274,7 +287,7 @@ defmodule Sheetshow.Xlsx do
 
       %{part: part, rid: rid} ->
         with {:ok, parts} <- parts(package) do
-          written = Workbook.delete_sheet(parts, title, part, rid)
+          written = Workbook.delete_sheet(parts, part, rid)
 
           entries =
             package.entries

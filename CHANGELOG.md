@@ -3,6 +3,37 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
+## 0.1.1 (2026-09-17)
+
+Fixes from a QA pass over 0.1.0, all in the `.xlsx` codec unless said otherwise:
+
+- A column of formulas Excel filled down (one `<f t="shared">` and pointers under it)
+  read as empty formulas and was written back as `<f></f>`, taking the formulas
+  out of the file. Each cell now reads as the shared formula moved to it.
+- Conditional formatting's fonts and fills (under `<dxfs>`) were counted with the
+  lists a cell indexes into, so a new style pointed past the end of `<fonts>`.
+- Deleting a sheet whose name a writer had escaped its own way (`Q1&apos;s`, as
+  LibreOffice does) left the `<sheet>` element behind, pointing at a part that
+  was gone.
+- Adding a string rewrote the shared string table from the text alone, flattening
+  rich text in every other cell of the workbook. The table is spliced now.
+- A worksheet whose elements carry a namespace prefix (`<x:sheetData>`) is read
+  but refused a write, rather than written back with two `sheetData` elements.
+- `Sheetshow.Table.refresh/2`: an id the snapshot had read twice, one of whose rows
+  had since gone, came back as two rows on one sheet row with the flag cleared.
+  Both stay flagged until a fresh read.
+- `Sheetshow.records/3` raised on `header: false`.
+- A colour such as `"#FF8800\n"` passed `Sheetshow.Style.validate/1` and failed in
+  the Google encoder; a sheet name or reference with a trailing newline parsed.
+- `Sheetshow.Schema.cast/2`: a `:json` column accepts a number or boolean a
+  person typed, and a `:boolean` column accepts `1.0` and `0.0`.
+- Every function that takes options now refuses an option it does not know, as
+  `Sheetshow.plan/2` already did: the layout builders, `Sheetshow.Client.new/2`,
+  `Sheetshow.Workbook.xlsx/2`, `Sheetshow.Token`, `Sheetshow.Log.Event.new/2`,
+  `Sheetshow.Table.insert/2` and `delete/2`, `Sheetshow.OAuth`,
+  `Sheetshow.ServiceAccount.assertion/2`, `Sheetshow.UserAccount.new/3` and
+  `Sheetshow.Store.webdav/2`.
+
 ## 0.1.0 (2026-09-16)
 
 The first release. What is in it:

@@ -11,16 +11,17 @@ defmodule Sheetshow.Xlsx.Sheet do
   # cannot simply be appended back either. Head and tail go back down untouched.
 
   alias Sheetshow.{A1, Cell, CellError, Coord, Runs, Value}
-  alias Sheetshow.Xlsx.{Strings, Styles, Xml}
+  alias Sheetshow.Xlsx.{Formula, Strings, Styles, Xml}
 
-  defstruct cells: [], col_widths: %{}, row_heights: %{}, head: "", tail: ""
+  defstruct cells: [], col_widths: %{}, row_heights: %{}, head: "", tail: "", writable: true
 
   @type t :: %__MODULE__{
           cells: [Cell.t()],
           col_widths: %{non_neg_integer() => pos_integer()},
           row_heights: %{non_neg_integer() => pos_integer()},
           head: binary(),
-          tail: binary()
+          tail: binary(),
+          writable: boolean()
         }
 
   # What a spreadsheet means by a column width is the number of digits that fit
@@ -65,7 +66,8 @@ defmodule Sheetshow.Xlsx.Sheet do
       cell: nil,
       cells: [],
       col_widths: %{},
-      row_heights: %{}
+      row_heights: %{},
+      shared: %{}
     }
 
     with {:ok, state} <- Xml.fold(xml, "a worksheet", initial, &event/2) do
@@ -77,7 +79,14 @@ defmodule Sheetshow.Xlsx.Sheet do
          col_widths: state.col_widths,
          row_heights: state.row_heights,
          head: head,
-         tail: tail
+         tail: tail,
+         # `split/1` looks for `<sheetData` in the default namespace, which is
+         # how every writer met so far spells it. A worksheet whose elements
+         # carry a prefix (`<x:sheetData>`) parses, since the SAX events name
+         # elements without one, but cannot be written back through `render/2`,
+         # which would leave the original `<x:sheetData>` in place beside a
+         # second, unprefixed one. Such a sheet is read-only here.
+         writable: :binary.match(xml, "<sheetData") != :nomatch
        }}
     end
   end
@@ -380,6 +389,7 @@ defmodule Sheetshow.Xlsx.Sheet do
       style: Xml.int(attrs, ~c"s", 0),
       type: Xml.attr(attrs, ~c"t") || "n",
       formula: nil,
+      shared: nil,
       text: nil,
       inline: nil
     }
@@ -390,8 +400,12 @@ defmodule Sheetshow.Xlsx.Sheet do
   defp event({:startElement, _uri, ~c"v", _q, _attrs}, %{cell: cell} = state) when is_map(cell),
     do: %{state | collecting: :value, chars: []}
 
-  defp event({:startElement, _uri, ~c"f", _q, _attrs}, %{cell: cell} = state) when is_map(cell),
-    do: %{state | collecting: :formula, chars: []}
+  # A shared formula is written once, on the first cell of its range, and the
+  # cells below it carry only `t="shared"` and the `si` that says which one.
+  defp event({:startElement, _uri, ~c"f", _q, attrs}, %{cell: cell} = state) when is_map(cell) do
+    cell = %{cell | shared: if(Xml.attr(attrs, ~c"t") == "shared", do: Xml.attr(attrs, ~c"si"))}
+    %{state | collecting: :formula, chars: [], cell: cell}
+  end
 
   # An inline string's text is in <is><t>, and rich text splits it across
   # several <r><t> runs that read as one string.
@@ -415,6 +429,7 @@ defmodule Sheetshow.Xlsx.Sheet do
        do: finish(state, :inline)
 
   defp event({:endElement, _uri, ~c"c", _q}, %{cell: cell} = state) when is_map(cell) do
+    {cell, state} = resolve(cell, state)
     %{state | cell: nil, col: cell.col + 1, cells: prepend(build(cell, state), state.cells)}
   end
 
@@ -434,6 +449,31 @@ defmodule Sheetshow.Xlsx.Sheet do
 
   defp prepend(nil, cells), do: cells
   defp prepend(cell, cells), do: [cell | cells]
+
+  # An `<f>` with nothing in it is no formula. For a shared one it is the
+  # pointer to the formula written on the first cell of the range, which reads
+  # here as that formula moved to this cell, exactly as Excel shows it. The
+  # first cell comes before the others in the part, so it has been seen; a
+  # pointer to one that has not is a damaged file, and the cell keeps its
+  # cached value rather than an empty formula.
+  defp resolve(%{shared: si, formula: formula} = cell, state) when is_binary(si) do
+    case formula do
+      text when is_binary(text) and text != "" ->
+        {cell, %{state | shared: Map.put(state.shared, si, {text, cell.row, cell.col})}}
+
+      _pointer ->
+        case Map.fetch(state.shared, si) do
+          {:ok, {text, row, col}} ->
+            {%{cell | formula: Formula.translate(text, cell.row - row, cell.col - col)}, state}
+
+          :error ->
+            {%{cell | formula: nil}, state}
+        end
+    end
+  end
+
+  defp resolve(%{formula: ""} = cell, state), do: {%{cell | formula: nil}, state}
+  defp resolve(cell, state), do: {cell, state}
 
   # --- building a cell ---
 

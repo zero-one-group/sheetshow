@@ -286,7 +286,10 @@ defmodule Sheetshow.Table do
 
   # The id column says where every id is now. A row whose id is gone goes with
   # it; an id that turns up twice makes both rows unwritable, and says so on the
-  # one the snapshot is holding rather than quietly picking one.
+  # one the snapshot is holding rather than quietly picking one. An id the
+  # snapshot itself read twice stays unwritable too, even when the tab now has
+  # it once: the snapshot holds two records for it and cannot tell which one
+  # the row still is, so only a fresh read can.
   defp relocate(rows, ids) do
     found =
       ids
@@ -298,12 +301,15 @@ defmodule Sheetshow.Table do
         end
       end)
 
+    held = rows |> Enum.map(& &1.id) |> Enum.frequencies()
+
     rows
     |> Enum.flat_map(fn %Row{} = row ->
-      case Map.get(found, row.id) do
-        nil -> []
-        [number] -> [%{row | row: number, errors: Map.delete(row.errors, :id)}]
-        [number | _] = all -> [%{row | row: number, errors: repeated(row, all)}]
+      case {Map.get(found, row.id), Map.get(held, row.id, 0)} do
+        {nil, _held} -> []
+        {[number], 1} -> [%{row | row: number, errors: Map.delete(row.errors, :id)}]
+        {[number], _twice} -> [%{row | row: number, errors: stale(row, rows)}]
+        {[number | _] = all, _held} -> [%{row | row: number, errors: repeated(row, all)}]
       end
     end)
     |> Enum.sort_by(& &1.row)
@@ -311,6 +317,22 @@ defmodule Sheetshow.Table do
 
   defp repeated(%Row{} = row, numbers) do
     Map.put(row.errors, :id, ambiguous(row.id, numbers))
+  end
+
+  defp stale(%Row{id: id} = row, rows) do
+    was = for %Row{id: ^id, row: number} <- rows, do: number
+
+    error =
+      Error.new(
+        :duplicate_id,
+        "rows #{Enum.join(was, " and ")} both had id #{inspect(id)} when this snapshot was " <>
+          "read, and the tab now has it once, so there is no telling which record is left: " <>
+          "read the table again",
+        id: id,
+        rows: was
+      )
+
+    Map.put(row.errors, :id, error)
   end
 
   @doc """
@@ -362,6 +384,7 @@ defmodule Sheetshow.Table do
   """
   @spec insert(Schema.fields(), keyword()) :: Change.t()
   def insert(record, opts \\ []) when is_map(record) and is_list(opts) do
+    opts = Keyword.validate!(opts, [:id])
     %Change{action: :insert, id: id(Keyword.get(opts, :id)), record: record}
   end
 
@@ -396,7 +419,8 @@ defmodule Sheetshow.Table do
   """
   @spec delete(String.t(), keyword()) :: Change.t()
   def delete(id, opts \\ []) when is_binary(id) and is_list(opts) do
-    %Change{action: :delete, id: id, hard: Keyword.get(opts, :hard, false)}
+    opts = Keyword.validate!(opts, hard: false)
+    %Change{action: :delete, id: id, hard: Keyword.fetch!(opts, :hard)}
   end
 
   @doc """
@@ -572,11 +596,13 @@ defmodule Sheetshow.Table do
     end
   end
 
+  # A row wearing a flag on its id says why it cannot be written to, and that
+  # reason beats a count of rows, which after a refresh may all be the same row.
   defp locate(id, %Snapshot{rows: rows}) do
     case Enum.filter(rows, &(&1.id == id)) do
-      [%Row{errors: %{id: error}}] -> {:error, unwritable(id, error)}
-      [%Row{} = row] -> {:ok, row}
       [] -> {:error, unknown_id(id)}
+      [%Row{errors: %{id: error}} | _] -> {:error, unwritable(id, error)}
+      [%Row{} = row] -> {:ok, row}
       [_, _ | _] = many -> {:error, ambiguous(id, Enum.map(many, & &1.row))}
     end
   end

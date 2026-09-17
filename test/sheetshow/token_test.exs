@@ -75,6 +75,16 @@ defmodule Sheetshow.TokenTest do
     end
   end
 
+  test "an option nobody reads is refused" do
+    assert_raise ArgumentError, ~r/unknown keys \[:scope\]/, fn ->
+      Token.new("ya29.abc", @now, scope: ["one"])
+    end
+
+    assert_raise ArgumentError, ~r/unknown keys \[:at\]/, fn ->
+      Token.from_response(%{"access_token" => "a", "expires_in" => 60}, at: @now)
+    end
+  end
+
   test "inspecting a token keeps the token to itself" do
     shown = inspect(Token.new("ya29.secret", @now, scopes: ["one"]))
 

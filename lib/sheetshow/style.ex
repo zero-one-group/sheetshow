@@ -40,7 +40,8 @@ defmodule Sheetshow.Style do
           @pixels ++
           Map.keys(@enums) ++ [:font_size, :font_family, :color, :background, :number_format]
 
-  @hex ~r/^#[0-9A-Fa-f]{6}$/
+  # `\z` rather than `$`, which would also accept "#FF8800\n".
+  @hex ~r/^#[0-9A-Fa-f]{6}\z/
 
   @doc "Every key a style may have."
   @spec keys() :: [atom()]

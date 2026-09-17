@@ -157,6 +157,35 @@ defmodule Sheetshow.SchemaTest do
       assert {%{blob: %{"a" => 1}}, %{}} = Schema.cast([~s({"a":1})], blob: :json)
     end
 
+    test "a json scalar somebody typed by hand is the number or boolean Sheets made of it" do
+      assert {%{blob: 42}, %{}} = Schema.cast([42], blob: :json)
+      assert {%{blob: true}, %{}} = Schema.cast([true], blob: :json)
+      assert {%{blob: 2.5}, %{}} = Schema.cast(["2.5"], blob: :json)
+    end
+
+    test "the temporal kinds arrive already made from a backend that keeps values" do
+      assert {%{on: ~D[2026-09-12]}, %{}} = Schema.cast([~D[2026-09-12]], on: :date)
+
+      assert {%{at: ~N[2026-09-12 08:30:00]}, %{}} =
+               Schema.cast([~N[2026-09-12 08:30:00]], at: :datetime)
+
+      assert {%{at: ~N[2026-09-12 08:30:00]}, %{}} =
+               Schema.cast([~U[2026-09-12 08:30:00Z]], at: :datetime)
+
+      assert {%{at: ~T[08:30:00]}, %{}} = Schema.cast([~T[08:30:00]], at: :time)
+      assert {%{at: ~T[08:30:00]}, %{}} = Schema.cast(["08:30:00"], at: :time)
+    end
+
+    test "a boolean in a string column reads as Sheets shows it" do
+      assert {%{s: "TRUE"}, %{}} = Schema.cast([true], s: :string)
+      assert {%{s: "FALSE"}, %{}} = Schema.cast([false], s: :string)
+    end
+
+    test "a DateTime is written to a datetime column as its wall-clock time" do
+      assert {:ok, [~U[2026-09-12 08:30:00Z]]} =
+               Schema.encode(%{at: ~U[2026-09-12 08:30:00Z]}, at: :datetime)
+    end
+
     test "flags the cell it could not read and leaves the field nil" do
       assert {record, errors} = Schema.cast(["Rent", "free"], item: :string, cost: :integer)
 
@@ -194,6 +223,12 @@ defmodule Sheetshow.SchemaTest do
       assert Schema.cast_boolean(false) == {:ok, false}
       assert Schema.cast_boolean("FALSE") == {:ok, false}
       assert Schema.cast_boolean(0) == {:ok, false}
+    end
+
+    test "a one or a zero a backend kept as a float" do
+      assert Schema.cast_boolean(1.0) == {:ok, true}
+      assert Schema.cast_boolean(0.0) == {:ok, false}
+      assert Schema.cast_boolean(2) == :error
     end
   end
 end

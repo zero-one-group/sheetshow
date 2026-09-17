@@ -42,6 +42,8 @@ defmodule Sheetshow.Log.Event do
   """
   @spec new(Schema.fields(), keyword()) :: t()
   def new(record, opts \\ []) when is_map(record) and is_list(opts) do
+    opts = Keyword.validate!(opts, [:id, :deleted])
+
     %__MODULE__{
       id: id(Keyword.get(opts, :id)),
       record: record,

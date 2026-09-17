@@ -669,5 +669,50 @@ defmodule Sheetshow.TableTest do
       assert {:ok, refreshed} = Table.refresh(snapshot, connected(url))
       assert Enum.map(refreshed.rows, &{&1.id, &1.row}) == [{"a", 3}, {"b", 4}]
     end
+
+    # The snapshot read two rows wearing one id; since then somebody removed one
+    # of them by hand. The tab is now consistent, but the snapshot holds two
+    # records for that id and cannot say which one survived, so both stay
+    # unwritable until a fresh read, rather than both claiming the one row.
+    test "an id the snapshot read twice stays unwritable when the tab now has it once" do
+      table = table()
+
+      twice = [
+        header(),
+        ["a", nil, "Rent", "1000.00", 46_277, true, 1],
+        Enum.at(rows(), 1),
+        Enum.at(rows(), 2)
+      ]
+
+      {:ok, snapshot} = Table.decode(twice, table)
+
+      assert Enum.map(snapshot.rows, &{&1.id, &1.row, Map.has_key?(&1.errors, :id)}) ==
+               [{"a", 1, false}, {"a", 2, true}, {"b", 3, false}]
+
+      url = TestServer.start([{200, answered([[header()], [["a"], ["b"]]])}])
+      assert {:ok, refreshed} = Table.refresh(snapshot, connected(url))
+
+      assert Enum.map(refreshed.rows, &{&1.id, &1.row}) == [{"a", 1}, {"a", 1}, {"b", 2}]
+      assert Enum.all?(refreshed.rows, &(&1.id != "a" or Map.has_key?(&1.errors, :id)))
+
+      assert {:error, %Error{reason: :duplicate_id} = error} =
+               Table.plan([Table.update("a", %{n: 1})], refreshed)
+
+      assert error.message =~ "rows 1 and 2 both had id"
+      assert error.message =~ "read the table again"
+      assert {:ok, [_ | _]} = Table.plan([Table.update("b", %{n: 1})], refreshed)
+    end
+  end
+
+  describe "options" do
+    test "an option insert or delete does not take is a mistake worth raising on" do
+      assert_raise ArgumentError, ~r/unknown keys \[:ids\]/, fn ->
+        Table.insert(%{item: "x"}, ids: "x")
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:force\]/, fn ->
+        Table.delete("a", force: true)
+      end
+    end
   end
 end

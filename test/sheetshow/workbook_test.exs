@@ -63,4 +63,20 @@ defmodule Sheetshow.WorkbookTest do
       assert Workbook.memory(["log"]).sheets == %{"log" => nil}
     end
   end
+
+  describe "options nobody reads" do
+    test "are refused, on a client and on a file alike" do
+      assert_raise ArgumentError, ~r/unknown keys \[:credential\]/, fn ->
+        Sheetshow.Client.new("1AbC", credential: :some)
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:timout\]/, fn ->
+        Sheetshow.Client.new("1AbC", http: [timout: 5_000])
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:creat\]/, fn ->
+        Workbook.xlsx("costs.xlsx", creat: true)
+      end
+    end
+  end
 end
