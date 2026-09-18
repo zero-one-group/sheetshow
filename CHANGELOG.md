@@ -3,7 +3,7 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
-## 0.1.2
+## 0.1.2 (2026-09-18)
 
 Fixes from an external review of 0.1.1. Correctness, and a more honest account of
 what the concurrency story does and does not cover.
