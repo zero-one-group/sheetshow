@@ -28,6 +28,18 @@ defmodule Sheetshow.SchemaTest do
 
       assert message =~ ":item"
     end
+
+    test "refuses two columns that differ only by case or surrounding space" do
+      # A header is matched case- and space-insensitively, so these are one
+      # column, and one would silently overwrite the other.
+      assert {:error, %Error{reason: :invalid_schema, message: message}} =
+               Schema.validate(name: :string, Name: :integer)
+
+      assert message =~ ":name"
+
+      assert {:error, %Error{reason: :invalid_schema}} =
+               Schema.validate([{:"a ", :string}, {:a, :integer}])
+    end
   end
 
   describe "encode/2" do
@@ -151,6 +163,16 @@ defmodule Sheetshow.SchemaTest do
 
     test "a decimal someone typed as a number comes back as a number would print" do
       assert {%{cost: "1000.0"}, %{}} = Schema.cast([1000.0], cost: :decimal)
+    end
+
+    test "a tiny number in a decimal column keeps its value rather than becoming 0" do
+      # 15 fixed decimals rounded it to "0"; the shortest round-tripping form is
+      # kept instead, exponent and all.
+      assert {%{cost: "1.0e-20"}, %{}} = Schema.cast([1.0e-20], cost: :decimal)
+    end
+
+    test "a serial too large to convert is a cast error, not a crash" do
+      assert {%{d: nil}, %{d: %Error{reason: :cast}}} = Schema.cast([1.0e308], d: :date)
     end
 
     test "decodes json" do

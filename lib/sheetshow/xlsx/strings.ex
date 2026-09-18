@@ -128,31 +128,52 @@ defmodule Sheetshow.Xlsx.Strings do
       ~s(<?xml version="1.0" encoding="UTF-8" standalone="yes"?>),
       ~s(<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ),
       ~s(count="#{count}" uniqueCount="#{count}">),
-      items(added),
+      items(added, ""),
       "</sst>"
     ]
   end
 
   def render(%__MODULE__{source: source} = strings) do
     added = Enum.reverse(strings.added)
-    spliced = IO.iodata_to_binary(items(added))
+    prefix = prefix(source)
+    spliced = IO.iodata_to_binary(items(added, prefix))
 
     source
-    |> bump("count", length(added))
-    |> bump("uniqueCount", length(added))
-    |> splice(spliced)
+    |> bump("count", length(added), prefix)
+    |> bump("uniqueCount", length(added), prefix)
+    |> splice(spliced, prefix)
   end
 
-  defp items(strings) do
-    Enum.map(strings, &[~s(<si><t xml:space="preserve">), Xml.escape(&1), "</t></si>"])
+  # A writer that spells its elements with a namespace prefix (`<x:sst>`, and so
+  # `<x:si>` and `<x:t>`) needs the strings spliced in to match, and the counts
+  # and the closing tag found under the same prefix. Matching only the
+  # unprefixed spelling left a prefixed table untouched, so a new string was
+  # assigned an index the table never grew to hold and the cell read back nil.
+  # The prefix is read off the root element, and is empty for the common
+  # default-namespace file, where nothing about this changes.
+  defp prefix(source) do
+    case Regex.run(~r/<([A-Za-z0-9_.-]+:)?sst\b/, source) do
+      [_, captured] -> captured
+      _ -> ""
+    end
+  end
+
+  defp items(strings, prefix) do
+    Enum.map(strings, fn string ->
+      [
+        "<#{prefix}si><#{prefix}t xml:space=\"preserve\">",
+        Xml.escape(string),
+        "</#{prefix}t></#{prefix}si>"
+      ]
+    end)
   end
 
   # `count` is how often the sheets point into the table and `uniqueCount` how
   # many entries it has; a new entry adds one to each, near enough, and a file
   # that never wrote the attribute does not gain it.
-  defp bump(xml, attribute, added) do
+  defp bump(xml, attribute, added, prefix) do
     Regex.replace(
-      ~r/(<sst\b[^>]*?\s#{attribute}=")(\d+)(")/,
+      ~r/(<#{Regex.escape(prefix)}sst\b[^>]*?\s#{attribute}=")(\d+)(")/,
       xml,
       fn _, before, n, after_ ->
         before <> Integer.to_string(String.to_integer(n) + added) <> after_
@@ -161,19 +182,21 @@ defmodule Sheetshow.Xlsx.Strings do
     )
   end
 
-  defp splice(xml, added) do
+  defp splice(xml, added, prefix) do
+    close = "</#{prefix}sst>"
+
     cond do
-      String.contains?(xml, "</sst>") ->
-        String.replace(xml, "</sst>", added <> "</sst>", global: false)
+      String.contains?(xml, close) ->
+        String.replace(xml, close, added <> close, global: false)
 
       # An empty table, self-closed. A function rather than a replacement
       # string, because a string value holding `\1` would otherwise be read as
       # a backreference.
-      Regex.match?(~r{<sst\b[^>]*/>}, xml) ->
+      Regex.match?(~r{<#{Regex.escape(prefix)}sst\b[^>]*/>}, xml) ->
         Regex.replace(
-          ~r{(<sst\b[^>]*?)/>},
+          ~r{(<#{Regex.escape(prefix)}sst\b[^>]*?)/>},
           xml,
-          fn _, open -> open <> ">" <> added <> "</sst>" end,
+          fn _, open -> open <> ">" <> added <> close end,
           global: false
         )
 

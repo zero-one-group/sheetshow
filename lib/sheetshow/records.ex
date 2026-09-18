@@ -28,6 +28,33 @@ defmodule Sheetshow.Records do
   @doc "A tab's columns, left to right: the two reserved ones, then the schema's."
   def columns(schema), do: [@id, @deleted | Schema.columns(schema)]
 
+  @doc """
+  Validates a schema for a database model: one `Sheetshow.Schema.validate/1`
+  accepts, and none of whose columns is named `id` or `deleted`. Those two are
+  the model's own, kept for a row's identity and its tombstone flag, so a schema
+  column by either name would sit under the reserved one and be read as it, and
+  writing the record would overwrite the identity. `Log` and `Table` validate
+  through here rather than through `Schema` directly.
+  """
+  def validate_schema(schema) do
+    with :ok <- Schema.validate(schema) do
+      case Enum.find(Schema.columns(schema), &(String.downcase(&1) in [@id, @deleted])) do
+        nil -> :ok
+        name -> {:error, reserved(name)}
+      end
+    end
+  end
+
+  defp reserved(name) do
+    Error.new(
+      :invalid_schema,
+      "#{inspect(name)} is a reserved column: #{inspect(@id)} and #{inspect(@deleted)} are the " <>
+        "model's own, kept for every row's identity and its tombstone flag, so name the column " <>
+        "something else",
+      column: name
+    )
+  end
+
   @doc "The header row as cells, for the tab a `%Log{}` or `%Table{}` names."
   def header(%{sheet: sheet, schema: schema}, style) do
     schema |> columns() |> Sheetshow.row(sheet: sheet, style: style)
@@ -69,13 +96,14 @@ defmodule Sheetshow.Records do
   in the same places.
   """
   def index(header, sheet, schema) do
-    positions =
+    indexed =
       for {name, position} <- Enum.with_index(header),
           key = normalise(name),
           key != nil,
-          into: %{} do
-        {key, position}
-      end
+          do: {key, position}
+
+    counts = indexed |> Enum.map(&elem(&1, 0)) |> Enum.frequencies()
+    positions = Map.new(indexed)
 
     if positions == %{} do
       {:error,
@@ -87,9 +115,21 @@ defmodule Sheetshow.Records do
        )}
     else
       Result.reduce(columns(schema), %{}, fn name, acc ->
-        case Map.fetch(positions, String.downcase(name)) do
-          {:ok, position} -> {:ok, Map.put(acc, name, position)}
-          :error -> {:error, missing_column(name, sheet, header)}
+        key = String.downcase(name)
+
+        cond do
+          # A tab a person edits can end up with a column named twice. Which one
+          # holds the truth is a question only they can answer, so it is refused
+          # rather than answered by taking the last, which is what building the
+          # map used to do silently.
+          Map.get(counts, key, 0) > 1 ->
+            {:error, duplicate_column(name, sheet, header)}
+
+          (position = Map.get(positions, key)) != nil ->
+            {:ok, Map.put(acc, name, position)}
+
+          true ->
+            {:error, missing_column(name, sheet, header)}
         end
       end)
     end
@@ -108,6 +148,17 @@ defmodule Sheetshow.Records do
     Error.new(
       :missing_column,
       "#{inspect(sheet)} has no #{inspect(name)} column: its header reads #{inspect(header)}",
+      column: name,
+      sheet: sheet,
+      header: header
+    )
+  end
+
+  defp duplicate_column(name, sheet, header) do
+    Error.new(
+      :duplicate_column,
+      "#{inspect(sheet)} names the #{inspect(name)} column more than once, so there is no " <>
+        "telling which to read or write: its header reads #{inspect(header)}",
       column: name,
       sheet: sheet,
       header: header

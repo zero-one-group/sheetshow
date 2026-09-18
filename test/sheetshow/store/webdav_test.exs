@@ -141,19 +141,17 @@ defmodule Sheetshow.Store.WebDAVTest do
       end
     end
 
-    test "a write that answers without a tag costs one HEAD to learn it" do
-      store = store([ok("", []), ok("", [{"etag", ~s("after")}])])
-
-      assert {:ok, ~s("after")} = Store.write(store, "bytes", :any)
-
-      assert_receive {:request, %{method: :PUT}}
-      assert_receive {:request, %{method: :HEAD}}
-    end
-
-    test "and a server that will say neither leaves the version :unknown" do
-      store = store([ok("", []), ok("", [])])
+    test "a write that answers without a tag leaves the version :unknown" do
+      # A separate HEAD could fetch a tag, but another writer racing in between
+      # the PUT and the HEAD would have us adopt theirs as if it named our own
+      # bytes, and a later conditional write would overwrite what we never read.
+      # :unknown is the honest answer, and no HEAD is made.
+      store = store([ok("", [])])
 
       assert {:ok, :unknown} = Store.write(store, "bytes", :any)
+
+      assert_receive {:request, %{method: :PUT}}
+      refute_receive {:request, %{method: :HEAD}}, 100
     end
   end
 

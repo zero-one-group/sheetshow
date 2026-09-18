@@ -24,6 +24,11 @@ defmodule Sheetshow.LogTest do
         Log.new("expenses", item: :text)
       end
     end
+
+    test "raises on a schema that reuses a reserved column" do
+      assert_raise ArgumentError, ~r/reserved/, fn -> Log.new("expenses", id: :string) end
+      assert_raise ArgumentError, ~r/reserved/, fn -> Log.new("expenses", deleted: :boolean) end
+    end
   end
 
   describe "Event.new/2" do

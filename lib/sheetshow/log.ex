@@ -61,14 +61,15 @@ defmodule Sheetshow.Log do
 
   @doc """
   A log on a tab, with the columns its rows have. Raises `ArgumentError` on a
-  schema `Sheetshow.Schema.validate/1` refuses.
+  schema `Sheetshow.Schema.validate/1` refuses, and on one that names an `id` or
+  `deleted` column, which the model keeps for itself.
 
       iex> Sheetshow.Log.new("expenses", item: :string, cost: :decimal).sheet
       "expenses"
   """
   @spec new(String.t(), Schema.t()) :: t()
   def new(sheet, schema) when is_binary(sheet) do
-    case Schema.validate(schema) do
+    case Records.validate_schema(schema) do
       :ok -> %__MODULE__{sheet: sheet, schema: schema}
       {:error, error} -> raise ArgumentError, Exception.message(error)
     end

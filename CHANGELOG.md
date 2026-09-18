@@ -3,6 +3,51 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
+## 0.1.2 (2026-09-18)
+
+Fixes from an external review of 0.1.1. Correctness, and a more honest account of
+what the concurrency story does and does not cover.
+
+- **`.xlsx` reads that lost data.** An ISO-date cell (`t="d"`, from a workbook
+  saved with `iso_dates`) read as nil and, since it read as nothing, was erased on
+  the next write; it now reads as a `Date` or `NaiveDateTime`. An elapsed duration
+  (`[h]:mm:ss`) read as a `Time`, throwing away whole days (36 hours became 12); it
+  keeps its number and its format now. A float smaller than `1.0e-15` (such as
+  `1.0e-20`) was written as `0`; the shortest round-tripping form is written
+  instead. An error cell (`#DIV/0!`) with no formula crashed any write to its
+  sheet; the error now reads into the cell's metadata, the same place a formula's
+  error goes, so the write succeeds. (Writing such a cell back verbatim is still to
+  come; an untouched error cell rewrites empty for now.)
+- **`.xlsx` writes that corrupted the file.** A shared-string table spelled with a
+  namespace prefix (`<x:sst>`) silently dropped a newly added string, so the cell
+  read back nil; mutations are namespace-aware now. Removing `calcChain.xml` left
+  its relationship and content-type override behind, pointing at a part that was
+  gone; both go with it.
+- **A local write no longer loosens a file's permissions.** Replacing a `0600`
+  file produced a `0644` one, because the temporary file took the process umask.
+  The destination's mode is now preserved, a new file is created `0600`, and the
+  temporary file is created exclusively.
+- **`Sheetshow.Table.compact/1`** no longer deletes a live row when a tombstone
+  shares its id after a refresh: an ambiguous tombstone is left for a fresh read to
+  resolve.
+- **Reserved and colliding columns are refused.** `Sheetshow.Table.new/2` and
+  `Sheetshow.Log.new/2` reject a schema with an `id` or `deleted` column, or two
+  columns that differ only by case or spacing; a tab whose header names a needed
+  column twice reads as `%Sheetshow.Error{reason: :duplicate_column}` rather than
+  silently taking the last.
+- **`Sheetshow.Schema.cast/2`** turns a serial number too large to convert into a
+  `:cast` error, rather than raising.
+- **WebDAV**: a `PUT` that returns no `ETag` leaves the version `:unknown` instead
+  of adopting one from a follow-up `HEAD`, which could be a racing writer's.
+- **Google**: a batch that adds a tab and then deletes it in one plan no longer
+  leaves the tab in the remembered metadata; adds and deletes are applied in order.
+- **What Sheetshow can promise, corrected.** A conditional-write store makes each
+  `run/2` on a file atomic against a racing writer, but does not yet tie a `Table`
+  write to the snapshot it was planned against, because `run/2` re-reads the file
+  at execution. The guide, the `Sheetshow.Table` docs and the README said this gap
+  was closed; they now say it is not, and the README's retry note carries the same
+  caveat the guide always has.
+
 ## 0.1.1 (2026-09-17)
 
 Fixes from a QA pass over 0.1.0, all in the `.xlsx` codec unless said otherwise:

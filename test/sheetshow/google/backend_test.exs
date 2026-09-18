@@ -1,7 +1,7 @@
 defmodule Sheetshow.Google.BackendTest do
   use ExUnit.Case, async: true
 
-  alias Sheetshow.{Cell, Client, Error, ServiceAccount, TestServer, Token, Workbook}
+  alias Sheetshow.{Cell, Client, Error, Op, ServiceAccount, TestServer, Token, Workbook}
 
   setup_all do
     key = :public_key.generate_key({:rsa, 2048, 65_537})
@@ -144,6 +144,24 @@ defmodule Sheetshow.Google.BackendTest do
 
       assert {:ok, workbook} = Sheetshow.run(plan, workbook)
       assert workbook.sheets == %{"Costs" => 0, "log" => 912}
+    end
+
+    test "an add then a delete of the same tab in one plan leaves it out" do
+      # The reply carries the addSheet, then an empty reply for the delete. The
+      # two are applied in the plan's order, so the add does not merge back in
+      # after the drop and leave a tab the batch took away.
+      id = Sheetshow.Google.sheet_id("Transient", %{"Kept" => 0})
+
+      replies =
+        ~s({"replies":[{"addSheet":{"properties":{"sheetId":#{id},"title":"Transient"}}},{}]})
+
+      url = TestServer.start([{200, replies}])
+      workbook = workbook(url, token: token()) |> Map.put(:sheets, %{"Kept" => 0})
+
+      plan = [Op.AddSheet.new("Transient"), Op.DeleteSheet.new("Transient")]
+
+      assert {:ok, workbook} = Sheetshow.run(plan, workbook)
+      assert workbook.sheets == %{"Kept" => 0}
     end
 
     test "a plan for a sheet the spreadsheet has not got never leaves the house" do

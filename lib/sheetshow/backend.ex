@@ -26,8 +26,9 @@ defmodule Sheetshow.Backend do
   | `:styles` | a cell's style is kept |
 
   `:server_side_append` is the one `Sheetshow.Log` rests on, and
-  `:conditional_write` is what gives `Sheetshow.Table` the guarantee Google
-  cannot; [What Sheetshow Can Promise](guides/guarantees.md) says how.
+  `:conditional_write` is what makes each `run/2` on a file atomic against a
+  racing writer, which Google cannot; [What Sheetshow Can Promise](guides/guarantees.md)
+  says what that does and does not cover for a `Sheetshow.Table`.
   """
 
   alias Sheetshow.{Cell, Error, Op, Range, Workbook}

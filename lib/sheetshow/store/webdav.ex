@@ -148,20 +148,17 @@ defmodule Sheetshow.Store.WebDAV do
     end)
   end
 
-  # A write answers with the new entity tag, usually. When it does not, one
-  # HEAD is what it costs to know what to send next time rather than guess, and
-  # a server that will not say either leaves the state `:unknown`.
-  defp version(store, response) do
+  # A write answers with the new entity tag, usually. When it does not, the
+  # state is `:unknown`. A separate HEAD could fetch one, but a writer that
+  # raced in between the PUT and the HEAD would have us adopt their entity tag
+  # as if it named our bytes, and a later conditional write would then overwrite
+  # what we never read. A version we cannot be sure names our own bytes is worse
+  # than none: `:unknown` says read again, or write with `:any` and take the
+  # risk.
+  defp version(_store, response) do
     case etag(response) do
-      nil -> {:ok, head_etag(store)}
+      nil -> {:ok, :unknown}
       etag -> {:ok, etag}
-    end
-  end
-
-  defp head_etag(%Store{location: url} = store) do
-    case HTTP.request(:head, url, auth(store), nil, http(store)) do
-      {:ok, %{status: status} = response} when status in 200..299 -> etag(response) || :unknown
-      _ -> :unknown
     end
   end
 

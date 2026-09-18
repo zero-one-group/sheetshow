@@ -48,6 +48,7 @@ defmodule Sheetshow.Store.Local do
     with :ok <- check(store, precondition),
          :ok <- mkdir(path),
          {:ok, temporary} <- write_temporary(path, bytes),
+         :ok <- preserve_mode(path, temporary),
          :ok <- check(store, precondition),
          :ok <- rename(temporary, path) do
       {:ok, version(path)}
@@ -100,12 +101,39 @@ defmodule Sheetshow.Store.Local do
 
   # Beside the real file rather than in a temporary directory, because a rename
   # is only atomic within one filesystem and /tmp is often another one.
+  #
+  # Created exclusively (`:exclusive` is `O_CREAT | O_EXCL`), so two writers
+  # cannot pick the same name and clobber each other's temporary file, and 0600,
+  # so nobody can read the new bytes through the temporary file while it is being
+  # written. `preserve_mode/2` sets the final mode from the destination just
+  # before the rename.
   defp write_temporary(path, bytes) do
     temporary = "#{path}.sheetshow-#{System.unique_integer([:positive])}"
 
-    case File.write(temporary, bytes) do
-      :ok -> {:ok, temporary}
-      {:error, reason} -> {:error, io(temporary, "could not write", reason)}
+    case File.write(temporary, bytes, [:exclusive]) do
+      :ok ->
+        _ = File.chmod(temporary, 0o600)
+        {:ok, temporary}
+
+      {:error, reason} ->
+        {:error, io(temporary, "could not write", reason)}
+    end
+  end
+
+  # A write replaces a file's contents, not its access mode: a file somebody
+  # made private (0600) stays private, rather than picking up whatever the
+  # process umask allows. A file being created keeps the temporary's own 0600,
+  # which is the safe default when there is no destination mode to match.
+  defp preserve_mode(path, temporary) do
+    case File.stat(path) do
+      {:ok, %File.Stat{mode: mode}} ->
+        case File.chmod(temporary, Bitwise.band(mode, 0o7777)) do
+          :ok -> :ok
+          {:error, reason} -> {:error, io(temporary, "could not set the permissions on", reason)}
+        end
+
+      {:error, _absent} ->
+        :ok
     end
   end
 

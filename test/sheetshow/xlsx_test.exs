@@ -212,8 +212,16 @@ defmodule Sheetshow.XlsxTest do
 
     test "an error type nobody has heard of stays the text it was" do
       cells = with_sheet(~s(<row r="1"><c r="A1" t="e"><v>#SPILL!</v></c></row>))
-      assert cells["A1"].meta == %{}
-      assert cells["A1"].value == %CellError{type: "#SPILL!"}
+      assert cells["A1"].meta.effective == %CellError{type: "#SPILL!"}
+    end
+
+    test "an error cell with no formula keeps its error in meta, never as a value" do
+      # An error is what a spreadsheet worked out, never something typed, so it
+      # goes where a formula's error goes and never becomes a cell value. That is
+      # also what keeps a later write to the sheet from tripping over it.
+      cells = with_sheet(~s(<row r="1"><c r="A1" t="e"><v>#DIV/0!</v></c></row>))
+      assert cells["A1"].value == nil
+      assert cells["A1"].meta.effective == %CellError{type: :divide_by_zero}
     end
 
     test "a formula result that is a string" do
@@ -221,6 +229,16 @@ defmodule Sheetshow.XlsxTest do
 
       assert cells["A1"].value == {:formula, "=A2"}
       assert cells["A1"].meta.effective == "hello"
+    end
+
+    test "an ISO-date cell reads as a date, whatever its number format" do
+      cells = with_sheet(~s(<row r="1"><c r="A1" t="d"><v>2026-09-18T12:30:00</v></c></row>))
+      assert cells["A1"].value == ~N[2026-09-18 12:30:00]
+    end
+
+    test "an ISO date with no time reads as a Date" do
+      cells = with_sheet(~s(<row r="1"><c r="A1" t="d"><v>2026-09-18</v></c></row>))
+      assert cells["A1"].value == ~D[2026-09-18]
     end
 
     test "a cell with no reference takes the next column along" do
@@ -369,6 +387,104 @@ defmodule Sheetshow.XlsxTest do
     test "an ordinary worksheet is writable", %{package: package} do
       {:ok, sheet} = Xlsx.sheet(package, "log")
       assert sheet.writable
+    end
+  end
+
+  describe "0.1.2 regressions" do
+    test "a float too small for fixed decimals round-trips instead of becoming zero" do
+      package = Xlsx.new()
+      {:ok, sheet} = Xlsx.sheet(package, "Sheet1")
+
+      {:ok, package} =
+        Xlsx.put_sheet(package, "Sheet1", %{sheet | cells: [Cell.new("Sheet1!A1", 1.0e-20)]})
+
+      {:ok, bytes} = Xlsx.encode(package)
+      {:ok, memory} = Xlsx.decode(bytes)
+
+      assert Sheetshow.to_rows(Memory.read!("Sheet1", memory)) == [[1.0e-20]]
+    end
+
+    test "an elapsed duration keeps its days: it reads as a number, not a Time" do
+      # duration.xlsx holds 36 hours (serial 1.5) formatted [hh]:mm:ss. Read as a
+      # Time it would come back 0.5, the days thrown away.
+      {:ok, memory} = Xlsx.decode(File.read!("test/fixtures/duration.xlsx"))
+      assert Sheetshow.to_rows(Memory.read!("Data", memory)) == [[1.5]]
+    end
+
+    test "an error cell does not crash a write to its sheet" do
+      package = Xlsx.new()
+
+      xml =
+        ~s(<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">) <>
+          ~s(<sheetData><row r="1"><c r="A1" t="e"><v>#DIV/0!</v></c></row></sheetData></worksheet>)
+
+      {:ok, bytes} = package.entries |> Zip.put("xl/worksheets/sheet1.xml", xml) |> Zip.write()
+      {:ok, package} = Xlsx.open(bytes)
+      {:ok, sheet} = Xlsx.sheet(package, "Sheet1")
+
+      edited = %{sheet | cells: sheet.cells ++ [Cell.new("Sheet1!C10", "edit")]}
+      assert {:ok, package} = Xlsx.put_sheet(package, "Sheet1", edited)
+      assert {:ok, _bytes} = Xlsx.encode(package)
+    end
+
+    test "a namespace-prefixed shared string table accepts a new string" do
+      package = Xlsx.new()
+
+      strings =
+        ~s(<x:sst xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">) <>
+          ~s(<x:si><x:t>old</x:t></x:si></x:sst>)
+
+      {:ok, bytes} = package.entries |> Zip.put("xl/sharedStrings.xml", strings) |> Zip.write()
+      {:ok, package} = Xlsx.open(bytes)
+      {:ok, sheet} = Xlsx.sheet(package, "Sheet1")
+
+      {:ok, package} =
+        Xlsx.put_sheet(package, "Sheet1", %{sheet | cells: [Cell.new("Sheet1!A1", "new")]})
+
+      {:ok, bytes} = Xlsx.encode(package)
+      {:ok, memory} = Xlsx.decode(bytes)
+
+      assert Sheetshow.to_rows(Memory.read!("Sheet1", memory)) == [["new"]]
+    end
+
+    test "removing calcChain removes its part, relationship and content type together" do
+      package = Xlsx.new()
+      {:ok, rels} = Zip.fetch(package.entries, "xl/_rels/workbook.xml.rels")
+
+      rel =
+        ~s(<Relationship Id="rId99" ) <>
+          ~s(Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" ) <>
+          ~s(Target="calcChain.xml"/>)
+
+      {:ok, types} = Zip.fetch(package.entries, "[Content_Types].xml")
+
+      override =
+        ~s(<Override PartName="/xl/calcChain.xml" ) <>
+          ~s(ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/>)
+
+      entries =
+        package.entries
+        |> Zip.put(
+          "xl/_rels/workbook.xml.rels",
+          String.replace(rels, "</Relationships>", rel <> "</Relationships>")
+        )
+        |> Zip.put(
+          "[Content_Types].xml",
+          String.replace(types, "</Types>", override <> "</Types>")
+        )
+        |> Zip.put(
+          "xl/calcChain.xml",
+          ~s(<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>)
+        )
+
+      {:ok, bytes} = Xlsx.encode(%{package | entries: entries})
+      {:ok, after_entries} = Zip.read(bytes)
+      {:ok, after_rels} = Zip.fetch(after_entries, "xl/_rels/workbook.xml.rels")
+      {:ok, after_types} = Zip.fetch(after_entries, "[Content_Types].xml")
+
+      refute after_rels =~ "calcChain"
+      refute after_types =~ "calcChain"
+      assert {:error, _} = Zip.fetch(after_entries, "xl/calcChain.xml")
     end
   end
 end

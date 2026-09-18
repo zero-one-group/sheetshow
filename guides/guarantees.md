@@ -70,10 +70,19 @@ uses to tell one state of the file from another, and `write/3` sends that
 version back as a precondition. `Sheetshow.Store.WebDAV` sends the file's
 `ETag` as `If-Match`, so a file that changed in between gets `412` and arrives
 as `%Sheetshow.Error{reason: :conflict}` with nothing written. That is
-`:conditional_write`, and it is the promise Google cannot make: over such a
-store a `Table` cycle of refresh, plan and run either lands on what you read or
-refuses, and a `Log` plan that lost the race is safe to run again unchanged,
-because its ids fold away against themselves.
+`:conditional_write`, and it is the promise Google cannot make: a `run/2` on a
+file is a whole read, change and write, and the precondition makes that atomic,
+so of two runs racing the loser is refused rather than silently overwriting the
+winner. A `Log` plan that lost that race is safe to run again unchanged, because
+its ids fold away against themselves.
+
+It does **not** yet tie a `Table` write to the snapshot it was planned against.
+`run/2` re-reads the file at execution rather than writing against the version
+the snapshot was read at, so a plan made against an old snapshot can still land
+on rows that have moved since, without a conflict. Carrying the observed version
+through to the write is what would close that, and is not yet done; until then
+`refresh/2` narrows the gap on a file exactly as it does on Google, and no
+further.
 
 `Sheetshow.Store.Local` cannot promise it. It checks the file's size and
 modification time immediately before an atomic rename, which catches most

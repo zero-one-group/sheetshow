@@ -235,7 +235,10 @@ defmodule Sheetshow.Xlsx.Sheet do
     if value == Float.round(value) and abs(value) < 1.0e15 do
       value |> trunc() |> Integer.to_string()
     else
-      :erlang.float_to_binary(value, [:compact, decimals: 15])
+      # The shortest string that reads back as the same float. Fixed 15 decimals
+      # rounded a value smaller than that to zero (1.0e-20 was written as 0), and
+      # exponent notation is a perfectly good number in a `<v>`.
+      :erlang.float_to_binary(value, [:short])
     end
   end
 
@@ -487,9 +490,22 @@ defmodule Sheetshow.Xlsx.Sheet do
     computed = computed(cell, kind, state.strings)
 
     {value, meta} =
-      case cell.formula do
-        nil -> {computed, %{}}
-        formula -> {{:formula, "=" <> formula}, effective(computed)}
+      cond do
+        cell.formula != nil ->
+          {{:formula, "=" <> cell.formula}, effective(computed)}
+
+        # A cell holding an error and no formula: an error is what a spreadsheet
+        # last worked out, never something a person typed, so it goes in `meta`,
+        # the same place a formula's error goes, and never becomes a cell value.
+        # That is also what keeps `Value.kind/1` from meeting a `%CellError{}` on
+        # the way back out and raising on it. The error itself is not written
+        # back yet: an untouched error cell rewrites empty until the codec keeps
+        # unmodelled cells verbatim.
+        match?(%CellError{}, computed) ->
+          {nil, %{effective: computed}}
+
+        true ->
+          {computed, %{}}
       end
 
     # The index this cell's style came from, so writing it back unchanged can
@@ -523,6 +539,12 @@ defmodule Sheetshow.Xlsx.Sheet do
     end
   end
 
+  # `t="d"` is a date written as ISO 8601 text rather than a serial number, which
+  # is what a workbook saved with `iso_dates` does. Both spellings are valid, so
+  # the number format does not decide it here: the text does. A time of day
+  # arrives as a full timestamp; a bare date has no time.
+  defp computed(%{type: "d"} = cell, _kind, _strings), do: cell.text && iso_temporal(cell.text)
+
   # A number, unless its number format says it is a moment. That is the only
   # thing that says so: 46278 is the 13th of September 2026 or the number
   # 46278, and nothing in the cell itself tells them apart.
@@ -531,6 +553,19 @@ defmodule Sheetshow.Xlsx.Sheet do
       number when is_number(number) and kind != nil -> Value.from_serial(number, kind)
       number when is_number(number) -> number
       _ -> nil
+    end
+  end
+
+  defp iso_temporal(text) do
+    case NaiveDateTime.from_iso8601(text) do
+      {:ok, naive} ->
+        naive
+
+      _ ->
+        case Date.from_iso8601(text) do
+          {:ok, date} -> date
+          _ -> nil
+        end
     end
   end
 
