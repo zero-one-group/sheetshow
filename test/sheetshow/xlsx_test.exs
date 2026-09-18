@@ -487,4 +487,106 @@ defmodule Sheetshow.XlsxTest do
       assert {:error, _} = Zip.fetch(after_entries, "xl/calcChain.xml")
     end
   end
+
+  describe "0.1.3 regressions" do
+    test "a built-in elapsed format (46) keeps its days: it reads as a number" do
+      # duration_builtin.xlsx uses built-in format 46 ([h]:mm:ss) with no <numFmt>;
+      # read as a Time it would come back 12:00 with the days gone.
+      {:ok, memory} = Xlsx.decode(File.read!("test/fixtures/duration_builtin.xlsx"))
+      assert Sheetshow.to_rows(Memory.read!("Data", memory)) == [[1.5]]
+    end
+
+    test "a bare ISO time reads as a Time, not nil" do
+      {:ok, memory} = Xlsx.decode(File.read!("test/fixtures/iso_time.xlsx"))
+      assert Sheetshow.to_rows(Memory.read!("Data", memory)) == [[~T[12:30:00]]]
+    end
+
+    test "removing calcChain also removes a namespace-prefixed relationship and override" do
+      package = Xlsx.new()
+      {:ok, rels} = Zip.fetch(package.entries, "xl/_rels/workbook.xml.rels")
+      {:ok, types} = Zip.fetch(package.entries, "[Content_Types].xml")
+
+      rel =
+        ~s(<r:Relationship Id='rId99' ) <>
+          ~s(Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" ) <>
+          ~s(Target="calcChain.xml"/>)
+
+      override =
+        ~s(<c:Override PartName='/xl/calcChain.xml' ) <>
+          ~s(ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/>)
+
+      entries =
+        package.entries
+        |> Zip.put(
+          "xl/_rels/workbook.xml.rels",
+          String.replace(rels, "</Relationships>", rel <> "</Relationships>")
+        )
+        |> Zip.put(
+          "[Content_Types].xml",
+          String.replace(types, "</Types>", override <> "</Types>")
+        )
+        |> Zip.put(
+          "xl/calcChain.xml",
+          ~s(<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>)
+        )
+
+      {:ok, bytes} = Xlsx.encode(%{package | entries: entries})
+      {:ok, after_entries} = Zip.read(bytes)
+      {:ok, after_rels} = Zip.fetch(after_entries, "xl/_rels/workbook.xml.rels")
+      {:ok, after_types} = Zip.fetch(after_entries, "[Content_Types].xml")
+
+      refute after_rels =~ "calcChain"
+      refute after_types =~ "calcChain"
+      assert {:error, _} = Zip.fetch(after_entries, "xl/calcChain.xml")
+    end
+
+    test "a namespace-prefixed styles part refuses a write that adds a style" do
+      # A styles.xml the parser reads but the writer cannot splice a new <xf> into
+      # without prefixing it and every child; adding a style is refused rather than
+      # written with an index the file cannot resolve.
+      prefixed =
+        ~s(<?xml version="1.0"?>) <>
+          ~s(<x:styleSheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">) <>
+          ~s(<x:fonts count="1"><x:font><x:sz val="11"/><x:name val="Calibri"/></x:font></x:fonts>) <>
+          ~s(<x:fills count="1"><x:fill><x:patternFill patternType="none"/></x:fill></x:fills>) <>
+          ~s(<x:cellXfs count="1"><x:xf numFmtId="0" fontId="0" fillId="0"/></x:cellXfs>) <>
+          ~s(</x:styleSheet>)
+
+      {:ok, entries} = Zip.read(fixture("xlsxwriter"))
+      {:ok, bytes} = entries |> Zip.put("xl/styles.xml", prefixed) |> Zip.write()
+      {:ok, package} = Xlsx.open(bytes)
+      {:ok, sheet} = Xlsx.sheet(package, "log")
+
+      bold = %{sheet | cells: [Cell.new("log!A1", "hi", %{bold: true})]}
+      {:ok, package} = Xlsx.put_sheet(package, "log", bold)
+
+      assert {:error, %Error{reason: :unsupported} = error} = Xlsx.encode(package)
+      assert error.message =~ "namespace prefix"
+    end
+
+    test "deleting the only sheet is refused rather than left unreadable" do
+      {:ok, package} = Xlsx.delete_sheet(Xlsx.new(), "Sheet1")
+      assert {:error, %Error{reason: :invalid_xlsx}} = Xlsx.encode(package)
+    end
+
+    test "a standalone error cell survives an unrelated edit" do
+      xml =
+        ~s(<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">) <>
+          ~s(<sheetData><row r="1"><c r="A1" t="e"><v>#DIV/0!</v></c></row></sheetData></worksheet>)
+
+      {:ok, bytes} = Xlsx.new().entries |> Zip.put("xl/worksheets/sheet1.xml", xml) |> Zip.write()
+      {:ok, package} = Xlsx.open(bytes)
+      {:ok, sheet} = Xlsx.sheet(package, "Sheet1")
+
+      edited = %{sheet | cells: sheet.cells ++ [Cell.new("Sheet1!C10", "edit")]}
+      {:ok, package} = Xlsx.put_sheet(package, "Sheet1", edited)
+      {:ok, bytes} = Xlsx.encode(package)
+
+      {:ok, reopened} = Xlsx.open(bytes)
+      {:ok, sheet} = Xlsx.sheet(reopened, "Sheet1")
+      a1 = Enum.find(sheet.cells, &(Sheetshow.Coord.to_a1(%{&1.coord | sheet: nil}) == "A1"))
+
+      assert a1.meta.effective == %CellError{type: :divide_by_zero}
+    end
+  end
 end

@@ -75,6 +75,14 @@ defmodule Sheetshow.RangeTest do
     assert_raise ArgumentError, fn -> Range.to_a1(%Range{start_row: 1}) end
   end
 
+  test "quote_sheet forces a whole-sheet name to be quoted, but leaves bounds bare" do
+    # Disambiguates a whole-sheet read from a same-named range on Google; a
+    # bounded range already reads as the sheet, so it is untouched.
+    assert Range.to_a1(%Range{sheet: "Costs"}, quote_sheet: true) == "'Costs'"
+    assert Range.to_a1(%Range{sheet: "Costs"}) == "Costs"
+    assert Range.to_a1(%Range{sheet: "Costs", end_col: 2}, quote_sheet: true) == "Costs!A:C"
+  end
+
   test "new needs ascending, non-negative, step-one ranges" do
     assert_raise FunctionClauseError, fn -> Range.new(nil, 3..1//-1, 0..0) end
     assert_raise FunctionClauseError, fn -> Range.new(nil, 0..2//2, 0..0) end

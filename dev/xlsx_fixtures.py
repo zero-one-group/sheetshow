@@ -108,8 +108,39 @@ def duration_fixture(path):
     wb.save(path)
 
 
+def duration_builtin_fixture(path):
+    # The same elapsed duration, but through the *built-in* format 46 rather than
+    # a custom code: openpyxl maps "[h]:mm:ss" to built-in id 46 and writes no
+    # <numFmt>. A reader that keeps a kind per built-in id, instead of reading the
+    # code, misses that 46 is elapsed and turns 1.5 days into a 12-hour Time.
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws["A1"] = 1.5
+    ws["A1"].number_format = "[h]:mm:ss"
+    wb.save(path)
+
+
+def iso_time_fixture(path):
+    # A bare time of day under iso_dates: openpyxl writes it as <c t="d"> with an
+    # ISO time string. A reader that tries only date and datetime reads it as nil
+    # and erases the cell on the next write.
+    import openpyxl
+    from datetime import time
+
+    wb = openpyxl.Workbook(iso_dates=True)
+    ws = wb.active
+    ws.title = "Data"
+    ws["A1"] = time(12, 30)
+    wb.save(path)
+
+
 if __name__ == "__main__":
     openpyxl_fixture(os.path.join(FIXTURES, "openpyxl.xlsx"))
     xlsxwriter_fixture(os.path.join(FIXTURES, "xlsxwriter.xlsx"))
     duration_fixture(os.path.join(FIXTURES, "duration.xlsx"))
-    print("wrote openpyxl.xlsx, xlsxwriter.xlsx and duration.xlsx to", FIXTURES)
+    duration_builtin_fixture(os.path.join(FIXTURES, "duration_builtin.xlsx"))
+    iso_time_fixture(os.path.join(FIXTURES, "iso_time.xlsx"))
+    print("wrote fixtures to", FIXTURES)

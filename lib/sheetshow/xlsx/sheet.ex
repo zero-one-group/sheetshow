@@ -46,6 +46,21 @@ defmodule Sheetshow.Xlsx.Sheet do
     "#GETTING_DATA" => "LOADING"
   }
 
+  # The way back, for writing an error cell out again: a `%CellError{}`'s type to
+  # the text a worksheet spells it with. The keys are what `CellError.new/2` makes
+  # of the tokens above; an error type not here is one Sheetshow did not recognise
+  # on the way in, whose type is already the original text.
+  @error_text %{
+    null_value: "#NULL!",
+    divide_by_zero: "#DIV/0!",
+    value: "#VALUE!",
+    ref: "#REF!",
+    name: "#NAME?",
+    num: "#NUM!",
+    n_a: "#N/A",
+    loading: "#GETTING_DATA"
+  }
+
   @doc """
   Reads one worksheet. `title` names the sheet the cells belong to; `strings`
   and `styles` are the workbook's, since a cell's text and a cell's kind both
@@ -154,6 +169,24 @@ defmodule Sheetshow.Xlsx.Sheet do
     ~s( ht="#{number(pixels / @points_to_pixels)}" customHeight="1")
   end
 
+  # A cell that read as an error and nothing else: its error lives in `meta`, not
+  # in `value`, and is written straight back as the `t="e"` cell it came from, so
+  # a write to some other cell on the sheet leaves it as it was rather than blank.
+  defp cell(%Cell{value: nil, meta: %{effective: %CellError{} = error}} = cell, strings, styles) do
+    style = style(cell)
+    {index, styles} = index(cell, style, styles)
+
+    rendered = [
+      ~s(<c r="#{ref(cell.coord)}"),
+      attribute("s", index),
+      ~s( t="e"><v>),
+      Xml.escape(error_text(error)),
+      "</v></c>"
+    ]
+
+    {rendered, strings, styles}
+  end
+
   defp cell(%Cell{} = cell, strings, styles) do
     style = style(cell)
     {index, styles} = index(cell, style, styles)
@@ -174,6 +207,8 @@ defmodule Sheetshow.Xlsx.Sheet do
 
     {rendered, strings, styles}
   end
+
+  defp error_text(%CellError{type: type}), do: Map.get(@error_text, type, type)
 
   # A date written without a number format reads back as the number it is, so
   # one that has none gets the format that makes it a date again, the same
@@ -563,8 +598,16 @@ defmodule Sheetshow.Xlsx.Sheet do
 
       _ ->
         case Date.from_iso8601(text) do
-          {:ok, date} -> date
-          _ -> nil
+          {:ok, date} ->
+            date
+
+          _ ->
+            # A time of day (`12:30:00`), which `iso_dates` writes for a bare
+            # time. Without this it read as nil and the cell was erased on write.
+            case Time.from_iso8601(text) do
+              {:ok, time} -> time
+              _ -> nil
+            end
         end
     end
   end

@@ -76,6 +76,10 @@ defmodule Sheetshow.Schema do
       (repeated = Keyword.keys(schema) -- Enum.uniq(Keyword.keys(schema))) != [] ->
         {:error, invalid("the column #{inspect(hd(repeated))} is in the schema twice")}
 
+      (blank = Enum.find(Keyword.keys(schema), &(String.trim(to_string(&1)) == ""))) != nil ->
+        {:error,
+         invalid("the column #{inspect(blank)} has no name once surrounding spaces are removed")}
+
       (colliding = colliding_names(Keyword.keys(schema))) != [] ->
         {:error,
          invalid(

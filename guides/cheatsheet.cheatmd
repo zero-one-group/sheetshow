@@ -42,7 +42,7 @@ are the sidebar's.
 | `col_to_letters/1` | 0-indexed column to letters. |
 | `letters_to_col/1` | Letters to 0-indexed column. |
 | `parse_ref/1` | Parses one endpoint of a reference into `{col, row}`, 0-indexed, where a… |
-| `quote_sheet/1` | Quotes a sheet name when A1 notation needs it. |
+| `quote_sheet/2` | Quotes a sheet name when A1 notation needs it. |
 | `ref_like?/1` | Whether a bare string reads as a cell or range reference rather than a sheet… |
 | `split_sheet/1` | Splits an A1 string into `{sheet, rest}`. |
 
@@ -76,7 +76,7 @@ are the sidebar's.
 | `contains?/2` | Whether the coordinate lies inside the range. |
 | `from_a1/1` | Parses an A1 range. **+ !** |
 | `new/3` | A bounded range from Elixir ranges of rows and columns. |
-| `to_a1/1` | Prints as A1. |
+| `to_a1/2` | Prints as A1. |
 
 ### Sheetshow.Style
 

@@ -47,11 +47,23 @@ defmodule Sheetshow.Store.Local do
   def write(%Store{location: path} = store, bytes, precondition) do
     with :ok <- check(store, precondition),
          :ok <- mkdir(path),
-         {:ok, temporary} <- write_temporary(path, bytes),
-         :ok <- preserve_mode(path, temporary),
+         {:ok, temporary} <- write_temporary(path, bytes) do
+      finish(store, path, temporary, precondition)
+    end
+  end
+
+  # Once the temporary file exists it must not be left behind, whatever goes
+  # wrong: mode, a lost race, or the rename itself. On success the rename has
+  # already moved it, so there is nothing to clean up.
+  defp finish(store, path, temporary, precondition) do
+    with :ok <- preserve_mode(path, temporary),
          :ok <- check(store, precondition),
          :ok <- rename(temporary, path) do
       {:ok, version(path)}
+    else
+      error ->
+        File.rm(temporary)
+        error
     end
   end
 
@@ -102,20 +114,52 @@ defmodule Sheetshow.Store.Local do
   # Beside the real file rather than in a temporary directory, because a rename
   # is only atomic within one filesystem and /tmp is often another one.
   #
-  # Created exclusively (`:exclusive` is `O_CREAT | O_EXCL`), so two writers
-  # cannot pick the same name and clobber each other's temporary file, and 0600,
-  # so nobody can read the new bytes through the temporary file while it is being
-  # written. `preserve_mode/2` sets the final mode from the destination just
-  # before the rename.
+  # The file is created exclusively (`:exclusive` is `O_CREAT | O_EXCL`, so two
+  # writers cannot pick the same name and clobber each other) and made 0600 while
+  # it is still empty; only then are the bytes written into it. That order is the
+  # point: the sensitive bytes never sit in a file readable at the process umask,
+  # so there is no window for an observer on a traversable directory to read them.
+  # `preserve_mode/2` sets the final mode from the destination just before the
+  # rename.
   defp write_temporary(path, bytes) do
     temporary = "#{path}.sheetshow-#{System.unique_integer([:positive])}"
 
-    case File.write(temporary, bytes, [:exclusive]) do
-      :ok ->
-        _ = File.chmod(temporary, 0o600)
-        {:ok, temporary}
+    with {:ok, device} <- open_private(temporary),
+         :ok <- write_bytes(temporary, device, bytes) do
+      {:ok, temporary}
+    end
+  end
+
+  defp open_private(temporary) do
+    case File.open(temporary, [:write, :binary, :exclusive]) do
+      {:ok, device} ->
+        case File.chmod(temporary, 0o600) do
+          :ok ->
+            {:ok, device}
+
+          {:error, reason} ->
+            File.close(device)
+            File.rm(temporary)
+            {:error, io(temporary, "could not set the permissions on", reason)}
+        end
 
       {:error, reason} ->
+        {:error, io(temporary, "could not create", reason)}
+    end
+  end
+
+  defp write_bytes(temporary, device, bytes) do
+    # `:file.write/2` rather than `IO.binwrite/2`: the latter's typespec says it
+    # only ever returns `:ok`, so matching its error would be flagged as dead.
+    result = :file.write(device, bytes)
+    File.close(device)
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        File.rm(temporary)
         {:error, io(temporary, "could not write", reason)}
     end
   end
@@ -137,14 +181,12 @@ defmodule Sheetshow.Store.Local do
     end
   end
 
+  # Cleanup of the temporary file on failure is `finish/4`'s job, so this only
+  # renames and reports.
   defp rename(temporary, path) do
     case File.rename(temporary, path) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        File.rm(temporary)
-        {:error, io(path, "could not move the new file into place at", reason)}
+      :ok -> :ok
+      {:error, reason} -> {:error, io(path, "could not move the new file into place at", reason)}
     end
   end
 

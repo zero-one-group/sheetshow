@@ -251,7 +251,9 @@ defmodule Sheetshow.ValuesTest do
       assert Log.fold(events) |> Enum.map(& &1.record) == [%{item: "Rent", cost: "1100.00"}]
 
       assert_receive {:request, request}
-      assert request.path == "/v4/spreadsheets/1AbC/values/expenses"
+      # The whole-sheet name is quoted, so Google reads the tab and not a
+      # same-named range that would otherwise take precedence.
+      assert request.path == "/v4/spreadsheets/1AbC/values/'expenses'"
     end
 
     test "carries :strict through to the decoding" do
