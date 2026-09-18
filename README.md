@@ -89,7 +89,7 @@ plain rows at about a twelfth the bytes.
 id appended again, a delete is the same id with a flag, and `fold/1` turns the
 history back into state. Because Google resolves an append server-side, several
 writers need no compare-and-swap between them, and a failed write is safe to
-retry. `Sheetshow.Table` is the mutable one, where row 7 *is* the record: read a
+retry, as long as it is retried before anything newer is written. `Sheetshow.Table` is the mutable one, where row 7 *is* the record: read a
 snapshot, build changes that name rows by id, `refresh/2` to find them again,
 then plan and run. Both share `Sheetshow.Schema`, which is a keyword list.
 

@@ -76,9 +76,27 @@ defmodule Sheetshow.Schema do
       (repeated = Keyword.keys(schema) -- Enum.uniq(Keyword.keys(schema))) != [] ->
         {:error, invalid("the column #{inspect(hd(repeated))} is in the schema twice")}
 
+      (colliding = colliding_names(Keyword.keys(schema))) != [] ->
+        {:error,
+         invalid(
+           "the columns #{inspect(colliding)} are the same column once a header is matched, " <>
+             "which ignores case and surrounding spaces, so one would silently overwrite the " <>
+             "other: give them names that differ by more than that"
+         )}
+
       true ->
         :ok
     end
+  end
+
+  # Columns are found on a tab by name, case- and space-insensitively, so two
+  # names that differ only by case or spacing are one column. Left in, the last
+  # one would silently win; caught here, they never become a plan.
+  defp colliding_names(keys) do
+    keys
+    |> Enum.group_by(&(&1 |> to_string() |> String.trim() |> String.downcase()))
+    |> Enum.filter(fn {_canonical, group} -> length(group) > 1 end)
+    |> Enum.flat_map(fn {_canonical, group} -> group end)
   end
 
   @doc """
@@ -230,6 +248,11 @@ defmodule Sheetshow.Schema do
 
   defp cast_value(value, kind) when kind in [:date, :datetime, :time] and is_number(value) do
     {:ok, Value.from_serial(value, kind)}
+  rescue
+    # A serial so large the conversion overflows is not a moment anyone meant.
+    # Lenient casting turns that into a nil field and a :cast error, the same as
+    # any other value that will not read, rather than raising out of a read.
+    ArithmeticError -> :error
   end
 
   # A backend that keeps values rather than serial numbers (`Sheetshow.Memory`,
@@ -288,7 +311,15 @@ defmodule Sheetshow.Schema do
   defp printed(value) when is_integer(value), do: Integer.to_string(value)
 
   defp printed(value) when is_float(value) do
-    :erlang.float_to_binary(value, [:compact, decimals: 15])
+    # Fixed 15 decimals keep a decimal column out of exponent form, which is not
+    # what anyone typed there. But 15 decimals cannot see a value smaller than
+    # 1.0e-15, and rounding a nonzero number to "0" is worse than an exponent, so
+    # such a value falls back to the shortest form that reads back the same.
+    if value != 0.0 and abs(value) < 1.0e-15 do
+      :erlang.float_to_binary(value, [:short])
+    else
+      :erlang.float_to_binary(value, [:compact, decimals: 15])
+    end
   end
 
   defp parse(string, parser) do

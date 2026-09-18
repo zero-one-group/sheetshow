@@ -179,6 +179,51 @@ defmodule Sheetshow.Xlsx.Workbook do
     }
   end
 
+  @calc_chain "http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain"
+
+  @doc """
+  The calculation chain part, if the workbook declares one: its relationship id
+  and the part it points at, resolved the way any target is. Found by following
+  the relationship rather than assuming a filename, because a target may be
+  written relative or absolute, and its basename is only `calcChain.xml` by
+  convention.
+  """
+  @spec calc_chain(binary(), String.t()) ::
+          {:ok, %{rid: String.t(), part: String.t()} | nil} | {:error, Error.t()}
+  def calc_chain(rels_xml, workbook_part) do
+    with {:ok, rels} <- relationships(rels_xml, rels_path(workbook_part)) do
+      case Enum.find(rels, &(&1.type == @calc_chain)) do
+        nil -> {:ok, nil}
+        rel -> {:ok, %{rid: rel.id, part: resolve(rel.target, directory(workbook_part))}}
+      end
+    end
+  end
+
+  @doc """
+  Takes a part out of the two places besides the zip that name it: the workbook's
+  relationship (by id) and the content-type override (by part name). The
+  `<Relationship>` and the `<Override>` go together, because a relationship
+  pointing at a part that is gone is itself the repair prompt removing the part
+  was meant to avoid.
+  """
+  @spec remove_part(%{workbook: binary(), rels: binary(), types: binary()}, %{
+          rid: String.t(),
+          part: String.t()
+        }) :: %{workbook: binary(), rels: binary(), types: binary()}
+  def remove_part(parts, %{rid: rid, part: part}) do
+    %{
+      workbook: parts.workbook,
+      rels:
+        String.replace(parts.rels, ~r{<Relationship\b[^>]*Id="#{Regex.escape(rid)}"[^>]*/>}, ""),
+      types:
+        String.replace(
+          parts.types,
+          ~r{<Override\b[^>]*PartName="/#{Regex.escape(part)}"[^>]*/>},
+          ""
+        )
+    }
+  end
+
   # Functions rather than replacement strings where the pattern is a regex: a
   # title holding `\1` would otherwise be read as a backreference.
   defp insert_sheet(xml, element) do

@@ -42,6 +42,7 @@ defmodule Sheetshow.Error do
   | `:invalid_record`, `:unknown_column` | a record a schema refuses to write: wrong type, or a key with no column |
   | `:cast` | a cell that would not read as its column's type; a flag on the row, or the error under `strict: true` |
   | `:missing_header`, `:missing_column` | a tab whose header is not there, or lacks a column the schema needs |
+  | `:duplicate_column` | a tab whose header names a column the schema needs more than once, so there is no telling which to read |
   | `:missing_id` | an event with no id, which cannot be written |
   | `:unknown_id`, `:duplicate_id` | a change naming an id the snapshot cannot place, or one two rows share |
   | `:conflicting_changes` | two changes to one id in one plan |
@@ -89,6 +90,7 @@ defmodule Sheetshow.Error do
           | :cast
           | :missing_header
           | :missing_column
+          | :duplicate_column
           | :missing_id
           | :unknown_id
           | :duplicate_id

@@ -56,8 +56,11 @@ defmodule Sheetshow.Table do
   change names its row by id, so `plan/2` is pure and can be run again against
   whatever `refresh/2` finds, and a cycle costs three requests, or two without
   the refresh. The refresh catches rows that have moved; reading again catches a
-  cell somebody edited under you; nothing catches the gap between the last read
-  and the write, only a store with a conditional write does.
+  cell somebody edited under you; nothing closes the gap between the last read
+  and the write. A store with a conditional write makes each `run/2` atomic, so
+  a writer racing it is refused rather than silently overwriting, but it does not
+  yet tie the write to the snapshot the plan was made against; see
+  [What Sheetshow Can Promise](guides/guarantees.md).
 
   Queries are `Enum` over `live/1`, since schemas are data and there is no
   query language here.
@@ -76,14 +79,15 @@ defmodule Sheetshow.Table do
 
   @doc """
   A table on a tab, with the columns its rows have. Raises `ArgumentError` on a
-  schema `Sheetshow.Schema.validate/1` refuses.
+  schema `Sheetshow.Schema.validate/1` refuses, and on one that names an `id` or
+  `deleted` column, which the model keeps for itself.
 
       iex> Sheetshow.Table.new("costs", item: :string, cost: :decimal).sheet
       "costs"
   """
   @spec new(String.t(), Schema.t()) :: t()
   def new(sheet, schema) when is_binary(sheet) do
-    case Schema.validate(schema) do
+    case Records.validate_schema(schema) do
       :ok -> %__MODULE__{sheet: sheet, schema: schema}
       {:error, error} -> raise ArgumentError, Exception.message(error)
     end
@@ -468,8 +472,11 @@ defmodule Sheetshow.Table do
   planner's job, not yours.
 
   The plan is applied whole or not at all. The gap between the read the snapshot
-  came from and the write is not covered: `refresh/2` makes it short, and only
-  a store with a conditional write closes it.
+  came from and the write is not covered: `refresh/2` makes it short. A store
+  with a conditional write makes each `run/2` atomic against another writer, but
+  does not yet close that gap, because `run/2` re-reads the file rather than
+  writing against the snapshot's version; see
+  [What Sheetshow Can Promise](guides/guarantees.md).
   """
   @spec plan([Change.t()], Snapshot.t()) :: {:ok, Op.plan()} | {:error, Error.t()}
   def plan([], %Snapshot{}), do: {:ok, []}
@@ -497,9 +504,12 @@ defmodule Sheetshow.Table do
   in one batch. The tidying half of soft delete, for when the tombstones have
   served their purpose.
 
-  Nothing can go wrong in the making of it, so it is a plan rather than an
-  `{:ok, plan}`. But it is a hard delete, and a stale snapshot means deleting
-  the wrong rows. Refresh, or read again, immediately before.
+  It is a plan rather than an `{:ok, plan}`. But it is a hard delete, and a stale
+  snapshot means deleting the wrong rows. Refresh, or read again, immediately
+  before. A tombstone whose id another row shares (which a `refresh/2` flags, and
+  which leaves both rows pointing at the first of their positions) is **left in
+  place** rather than deleted at a position that may not be its own: a fresh read
+  that shows the id once is what lets it go.
 
       iex> table = Sheetshow.Table.new("costs", item: :string)
       iex> rows = [["id", "deleted", "item"], ["a", nil, "Rent"], ["b", true, "Food"]]
@@ -509,8 +519,17 @@ defmodule Sheetshow.Table do
   """
   @spec compact(Snapshot.t()) :: Op.plan()
   def compact(%Snapshot{table: table, rows: rows}) do
-    rows |> Enum.filter(& &1.deleted) |> Enum.map(& &1.row) |> deletes(table.sheet)
+    rows
+    |> Enum.filter(&(&1.deleted and not flagged?(&1)))
+    |> Enum.map(& &1.row)
+    |> deletes(table.sheet)
   end
+
+  # A row wearing an id flag cannot be placed: after a refresh, two rows sharing
+  # an id both point at the first of their positions, so compacting the deleted
+  # one would delete whatever now sits there, the live one included.
+  defp flagged?(%Row{errors: %{id: _}}), do: true
+  defp flagged?(%Row{}), do: false
 
   # Two changes to one id in one batch is a question about order that the
   # caller has not answered, and `updateCells` then `deleteRow` on the same row

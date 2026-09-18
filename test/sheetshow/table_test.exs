@@ -30,6 +30,15 @@ defmodule Sheetshow.TableTest do
     test "refuses a schema Schema.validate would" do
       assert_raise ArgumentError, fn -> Table.new("costs", item: :colour) end
     end
+
+    test "refuses a schema that reuses a reserved column" do
+      assert_raise ArgumentError, ~r/reserved/, fn -> Table.new("costs", id: :string) end
+      assert_raise ArgumentError, ~r/reserved/, fn -> Table.new("costs", deleted: :boolean) end
+    end
+
+    test "refuses columns that are one column once a header is matched" do
+      assert_raise ArgumentError, fn -> Table.new("costs", name: :string, Name: :string) end
+    end
   end
 
   describe "decode" do
@@ -135,6 +144,15 @@ defmodule Sheetshow.TableTest do
                Table.decode(tl(rows()), table(), header: header(), row: 10)
 
       assert Enum.map(snapshot.rows, & &1.row) == [10, 11]
+    end
+
+    test "a header naming a needed column twice is refused, not answered by the last" do
+      twice = [["id", "deleted", "id", "item"], ["a", nil, "x", "Rent"]]
+
+      assert {:error, %Error{reason: :duplicate_column} = error} =
+               Table.decode(twice, Table.new("costs", item: :string))
+
+      assert error.details.column == "id"
     end
 
     test "an option it does not take is a mistake worth raising on" do
@@ -567,6 +585,34 @@ defmodule Sheetshow.TableTest do
     test "nothing to compact is an empty plan" do
       {table, memory} = seeded([header(), ["a", nil, "Rent", "1000.00", 46_277, true, 1]])
       assert memory |> taken(table) |> Table.compact() == []
+    end
+
+    test "leaves a tombstone whose id a live row shares after a refresh" do
+      # A live `a` above a tombstoned `a`: a refresh points both at the first of
+      # their positions, so compacting the dead one would delete the live one.
+      # It is left for a fresh read to sort out instead.
+      table = Table.new("Data", value: :string)
+
+      cells =
+        Sheetshow.rows(
+          [
+            ["id", "deleted", "value"],
+            ["a", nil, "live"],
+            ["a", true, "dead"],
+            ["b", nil, "gone"]
+          ],
+          sheet: "Data"
+        )
+
+      {:ok, workbook} =
+        Sheetshow.run(Sheetshow.plan!(cells, existing_sheets: []), Workbook.memory())
+
+      {:ok, snapshot} = Table.refresh(Table.read!(table, workbook), workbook)
+
+      assert Table.compact(snapshot) == []
+
+      {:ok, after_} = Sheetshow.run(Table.compact(snapshot), workbook)
+      assert Enum.any?(Table.live(Table.read!(table, after_)), &(&1.record.value == "live"))
     end
   end
 

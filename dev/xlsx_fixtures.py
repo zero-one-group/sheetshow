@@ -93,7 +93,23 @@ def xlsxwriter_fixture(path):
     wb.close()
 
 
+def duration_fixture(path):
+    # An elapsed duration, formatted [hh]:mm:ss, which is a count of hours and
+    # not a time of day: 36 hours is the serial number 1.5. A reader that treats
+    # it as a Time throws the whole days away, turning 1.5 into 0.5. openpyxl
+    # applies the elapsed format to a timedelta on its own.
+    import openpyxl
+    from datetime import timedelta
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Data"
+    ws["A1"] = timedelta(hours=36)
+    wb.save(path)
+
+
 if __name__ == "__main__":
     openpyxl_fixture(os.path.join(FIXTURES, "openpyxl.xlsx"))
     xlsxwriter_fixture(os.path.join(FIXTURES, "xlsxwriter.xlsx"))
-    print("wrote openpyxl.xlsx and xlsxwriter.xlsx to", FIXTURES)
+    duration_fixture(os.path.join(FIXTURES, "duration.xlsx"))
+    print("wrote openpyxl.xlsx, xlsxwriter.xlsx and duration.xlsx to", FIXTURES)

@@ -312,11 +312,36 @@ defmodule Sheetshow.Xlsx do
   @spec encode(t()) :: {:ok, binary()} | {:error, Error.t()}
   def encode(%__MODULE__{} = package) do
     with {:ok, package} <- write_strings(package),
-         {:ok, package} <- write_styles(package) do
-      package.entries
-      |> Zip.delete(Path.dirname(package.book.part) <> "/calcChain.xml")
-      |> Zip.write()
+         {:ok, package} <- write_styles(package),
+         {:ok, package} <- drop_calc_chain(package) do
+      Zip.write(package.entries)
     end
+  end
+
+  # calcChain.xml names cells by position, so a stale one makes a reader offer to
+  # repair the file. It goes out with the relationship and the content-type
+  # override that name it, so nothing is left pointing at a part that is gone,
+  # which is itself a repair prompt. The part is found by following the
+  # relationship rather than assuming its name. A workbook that declares no
+  # calcChain still loses a conventionally named one, exactly as before.
+  defp drop_calc_chain(package) do
+    fallback = %{package | entries: Zip.delete(package.entries, assumed_calc_chain(package))}
+
+    with {:ok, parts} <- parts(package),
+         {:ok, %{part: part} = chain} <- Workbook.calc_chain(parts.rels, package.book.part) do
+      entries =
+        package.entries
+        |> Zip.delete(part)
+        |> put_parts(package, Workbook.remove_part(parts, chain))
+
+      {:ok, %{package | entries: entries}}
+    else
+      _ -> {:ok, fallback}
+    end
+  end
+
+  defp assumed_calc_chain(package) do
+    Path.dirname(package.book.part) <> "/calcChain.xml"
   end
 
   defp write_strings(%{book: %{strings: part}} = package) when is_binary(part) do

@@ -12,7 +12,14 @@ defmodule Sheetshow.Xlsx.StylesTest do
     end
 
     test "the letters that can only mean a time" do
-      for code <- ["h:mm", "ss.0", "[h]:mm:ss", "mm:ss.0"], do: assert(Styles.kind(code) == :time)
+      for code <- ["h:mm", "ss.0", "mm:ss.0"], do: assert(Styles.kind(code) == :time)
+    end
+
+    test "an elapsed duration is a number, not a time of day" do
+      # 36 hours is the number 1.5, and a Time cannot hold whole days, so an
+      # elapsed field keeps its number and its format rather than reading as a
+      # Time that has silently dropped the days.
+      for code <- ["[h]:mm:ss", "[h]", "[mm]:ss", "[ss].0"], do: assert(Styles.kind(code) == nil)
     end
 
     test "both together" do

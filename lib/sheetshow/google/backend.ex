@@ -146,8 +146,7 @@ defmodule Sheetshow.Google.Backend do
              client.http
            ),
          {:ok, json} <- ok_json(response, url) do
-      sheets = workbook.sheets |> Map.drop(dropped(plan)) |> Map.merge(added(json))
-      {:ok, Workbook.put_sheets(workbook, sheets)}
+      {:ok, Workbook.put_sheets(workbook, remember(plan, json, workbook.sheets))}
     end
   end
 
@@ -223,9 +222,20 @@ defmodule Sheetshow.Google.Backend do
     end
   end
 
-  # A deleted sheet leaves no reply to read, so the plan is what says it went.
-  defp dropped(plan) do
-    for %Op.DeleteSheet{title: title} <- plan, do: title
+  # The plan's adds and deletes applied to the remembered sheets in the order
+  # the caller gave them, so a batch that adds a tab and then deletes it leaves
+  # the workbook as it found it. Dropping every delete first and merging every
+  # add after (an unordered `Map.drop |> Map.merge`) forgot the order and left
+  # the deleted tab behind. An added tab's id comes from its reply; a delete
+  # answers with nothing, so its title is simply taken back out.
+  defp remember(plan, json, sheets) do
+    ids = added(json)
+
+    Enum.reduce(plan, sheets, fn
+      %Op.AddSheet{title: title}, acc -> Map.put(acc, title, Map.get(ids, title))
+      %Op.DeleteSheet{title: title}, acc -> Map.delete(acc, title)
+      _op, acc -> acc
+    end)
   end
 
   # A batch update answers an AddSheet with the sheet it made, which is how a

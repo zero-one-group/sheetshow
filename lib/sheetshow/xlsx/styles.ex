@@ -561,6 +561,8 @@ defmodule Sheetshow.Xlsx.Styles do
       iex> Styles.kind(~s(0.00" days"))
       nil
       iex> Styles.kind("[h]:mm:ss")
+      nil
+      iex> Styles.kind("h:mm:ss")
       :time
       iex> Styles.kind("[Red]#,##0;[Blue]-#,##0")
       nil
@@ -570,26 +572,32 @@ defmodule Sheetshow.Xlsx.Styles do
 
   def kind(code) do
     section = code |> String.split(";") |> List.first()
-    elapsed = Regex.match?(~r/\[[hms]+\]/i, section)
-    bare = strip_literals(section)
 
-    date? = String.match?(bare, ~r/[yd]/i)
-    time? = elapsed or String.match?(bare, ~r/[hs]/i)
+    # An elapsed duration ([h], [m], [s]) is a count of hours, minutes or
+    # seconds, not a moment: 36 hours is the number 1.5, and reading it as a
+    # `Time` would throw the whole days away. It keeps its number and its format
+    # instead, and reads back as the number it is. Anything a `Time` cannot hold
+    # is not a `Time`.
+    if Regex.match?(~r/\[[hms]+\]/i, section) do
+      nil
+    else
+      bare = strip_literals(section)
+      date? = String.match?(bare, ~r/[yd]/i)
+      time? = String.match?(bare, ~r/[hs]/i)
 
-    cond do
-      date? and time? -> :datetime
-      date? -> :date
-      time? -> :time
-      true -> nil
+      cond do
+        date? and time? -> :datetime
+        date? -> :date
+        time? -> :time
+        true -> nil
+      end
     end
   end
 
   defp strip_literals(section) do
     section
-    |> String.replace(~r/\[[hms]+\]/i, "@elapsed@")
     |> String.replace(~r/"[^"]*"/, "")
     |> String.replace(~r/\\./, "")
     |> String.replace(~r/\[[^\]]*\]/, "")
-    |> String.replace("@elapsed@", "h")
   end
 end

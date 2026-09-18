@@ -139,6 +139,22 @@ defmodule Sheetshow.Store.LocalTest do
     end
   end
 
+  describe "permissions" do
+    test "a write over a private file keeps it private", %{store: store, path: path} do
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "old")
+      File.chmod!(path, 0o600)
+
+      assert {:ok, _version} = Store.write(store, "new", :any)
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+    end
+
+    test "a new file is created private, not with the process umask", %{store: store, path: path} do
+      assert {:ok, _version} = Store.write(store, "new", :any)
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+    end
+  end
+
   describe "the value" do
     test "names the module that does the work and where the file is" do
       store = Store.local("costs.xlsx")
