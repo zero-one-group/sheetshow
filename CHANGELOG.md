@@ -3,6 +3,41 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
+## 0.1.3 (2026-09-18)
+
+A second external review pass over 0.1.2, all correctness or safety, all in the
+`.xlsx` codec unless said otherwise.
+
+- **A built-in elapsed format (46, `[h]:mm:ss`) still lost whole days.** 0.1.2 fixed
+  the custom-format route but the built-in table kept a hardcoded `:time`; both
+  routes now read the format code through one classifier, so 36 hours stays the
+  number `1.5` rather than a 12-hour `Time`.
+- **An ISO time-only cell (`t="d"` holding `12:30:00`, from `iso_dates`) read as nil**
+  and was erased on the next write; it now reads as a `Time`.
+- **A standalone error cell is preserved on write.** 0.1.2 stopped the crash but
+  blanked the cell on an unrelated edit; the `t="e"` cell is now written back as it
+  was read.
+- **`Sheetshow.Store.Local`** created its temporary file, wrote the bytes, then made
+  it private, leaving a window where the new contents were readable at the process
+  umask; it is now made private while empty, before the bytes, and removed on every
+  failure path.
+- **calcChain cleanup** removed the part but left a namespace-prefixed
+  (`<r:Relationship>`) or single-quoted relationship or content-type override
+  behind; removal now matches every spelling its discovery does.
+- **Header names are canonicalized one way.** A schema column with surrounding
+  space built a table its own read then rejected as `:missing_column`, and a padded
+  reserved name (`:" id "`) slipped past the constructor; validation and indexing
+  now share one trim-and-downcase rule, and a blank column name is refused.
+- **Adding a style to a namespace-prefixed styles part** wrote an index the file
+  could not resolve; such a part is now read-only and the write is refused with
+  `:unsupported`, the way a prefixed worksheet already is.
+- **Deleting the last sheet** produced a workbook no reader could open; a plan that
+  would leave no sheets is refused (`:invalid_xlsx`), checked on the final state so
+  delete-then-add in one batch still works.
+- **Google whole-sheet reads** sent a bare tab name (`Costs`), which Google can
+  resolve to a same-named named range in preference to the sheet; whole-sheet reads
+  now quote the name.
+
 ## 0.1.2 (2026-09-18)
 
 Fixes from an external review of 0.1.1. Correctness, and a more honest account of

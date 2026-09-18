@@ -158,14 +158,8 @@ defmodule Sheetshow.Xlsx.Workbook do
           ~r{<sheet\b[^>]*\s[\w.-]+:id="#{Regex.escape(rid)}"[^>]*/>},
           ""
         ),
-      rels:
-        String.replace(parts.rels, ~r{<Relationship\b[^>]*Id="#{Regex.escape(rid)}"[^>]*/>}, ""),
-      types:
-        String.replace(
-          parts.types,
-          ~r{<Override\b[^>]*PartName="/#{Regex.escape(part)}"[^>]*/>},
-          ""
-        )
+      rels: drop_relationship(parts.rels, rid),
+      types: drop_override(parts.types, part)
     }
   end
 
@@ -213,15 +207,30 @@ defmodule Sheetshow.Xlsx.Workbook do
   def remove_part(parts, %{rid: rid, part: part}) do
     %{
       workbook: parts.workbook,
-      rels:
-        String.replace(parts.rels, ~r{<Relationship\b[^>]*Id="#{Regex.escape(rid)}"[^>]*/>}, ""),
-      types:
-        String.replace(
-          parts.types,
-          ~r{<Override\b[^>]*PartName="/#{Regex.escape(part)}"[^>]*/>},
-          ""
-        )
+      rels: drop_relationship(parts.rels, rid),
+      types: drop_override(parts.types, part)
     }
+  end
+
+  # Removing a relationship by id and a content-type override by part. Both allow
+  # a namespace prefix on the element (`<r:Relationship>`, `<c:Override>`) and
+  # either quote style on the attribute, so removal handles every spelling the
+  # namespace-aware discovery does; otherwise a part could go while a declaration
+  # naming it stayed, which is the dangling reference a reader offers to repair.
+  defp drop_relationship(rels, rid) do
+    String.replace(
+      rels,
+      ~r{<(?:[\w.-]+:)?Relationship\b[^>]*\bId=(?:"#{Regex.escape(rid)}"|'#{Regex.escape(rid)}')[^>]*/>},
+      ""
+    )
+  end
+
+  defp drop_override(types, part) do
+    String.replace(
+      types,
+      ~r{<(?:[\w.-]+:)?Override\b[^>]*\bPartName=(?:"/#{Regex.escape(part)}"|'/#{Regex.escape(part)}')[^>]*/>},
+      ""
+    )
   end
 
   # Functions rather than replacement strings where the pattern is a regex: a

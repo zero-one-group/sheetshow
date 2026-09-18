@@ -29,6 +29,13 @@ defmodule Sheetshow.SchemaTest do
       assert message =~ ":item"
     end
 
+    test "refuses a column whose name is blank once trimmed" do
+      assert {:error, %Error{reason: :invalid_schema, message: message}} =
+               Schema.validate([{:"  ", :string}])
+
+      assert message =~ "no name"
+    end
+
     test "refuses two columns that differ only by case or surrounding space" do
       # A header is matched case- and space-insensitively, so these are one
       # column, and one would silently overwrite the other.

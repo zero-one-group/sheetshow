@@ -310,6 +310,18 @@ defmodule Sheetshow.Xlsx do
   # stale one makes a reader offer to repair the file, and every part nothing
   # touched is copied across still compressed.
   @spec encode(t()) :: {:ok, binary()} | {:error, Error.t()}
+  # A workbook with no sheets is one no reader will open, so a plan that would
+  # leave none is refused here rather than written out. The check is on the final
+  # state, so a batch that deletes one tab and adds another still encodes; only
+  # ending with nothing does not.
+  def encode(%__MODULE__{book: %{sheets: []}} = _package) do
+    {:error,
+     Error.new(
+       :invalid_xlsx,
+       "a workbook must have at least one sheet, and this plan would leave none"
+     )}
+  end
+
   def encode(%__MODULE__{} = package) do
     with {:ok, package} <- write_strings(package),
          {:ok, package} <- write_styles(package),
@@ -359,6 +371,16 @@ defmodule Sheetshow.Xlsx do
 
   defp write_styles(package) do
     cond do
+      Styles.added?(package.styles) and not Styles.writable?(package.styles) ->
+        {:error,
+         Error.new(
+           :unsupported,
+           "#{package.book.styles} spells its elements with a namespace prefix, which Sheetshow " <>
+             "reads but cannot add a style to; this write needs a new style, so it is refused " <>
+             "rather than written with an index the file cannot resolve",
+           part: package.book.styles
+         )}
+
       not Styles.added?(package.styles) and is_binary(package.book.styles) ->
         {:ok, package}
 

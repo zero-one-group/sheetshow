@@ -153,6 +153,25 @@ defmodule Sheetshow.Store.LocalTest do
       assert {:ok, _version} = Store.write(store, "new", :any)
       assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
     end
+
+    test "a successful write leaves no temporary file behind", %{store: store, path: path} do
+      assert {:ok, _version} = Store.write(store, "new", :any)
+      assert Path.dirname(path) |> File.ls!() |> Enum.reject(&(&1 == "costs.xlsx")) == []
+    end
+
+    test "a refused write leaves the file untouched and no temporary behind", %{
+      store: store,
+      path: path
+    } do
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, "old")
+
+      # The precondition names a version the file does not have, so the write is
+      # refused: the original stands and nothing is left in the directory.
+      assert {:error, %Error{reason: :conflict}} = Store.write(store, "new", {999, 0})
+      assert File.read!(path) == "old"
+      assert Path.dirname(path) |> File.ls!() |> Enum.reject(&(&1 == "costs.xlsx")) == []
+    end
   end
 
   describe "the value" do

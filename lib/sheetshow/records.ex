@@ -38,7 +38,10 @@ defmodule Sheetshow.Records do
   """
   def validate_schema(schema) do
     with :ok <- Schema.validate(schema) do
-      case Enum.find(Schema.columns(schema), &(String.downcase(&1) in [@id, @deleted])) do
+      # `canonical/1`, the same trim-and-downcase the header uses, so a padded
+      # reserved name (`:" id "`) is caught here rather than slipping through to
+      # collide with the model's own id column on the tab.
+      case Enum.find(Schema.columns(schema), &(canonical(&1) in [@id, @deleted])) do
         nil -> :ok
         name -> {:error, reserved(name)}
       end
@@ -115,7 +118,11 @@ defmodule Sheetshow.Records do
        )}
     else
       Result.reduce(columns(schema), %{}, fn name, acc ->
-        key = String.downcase(name)
+        # The same trim-and-downcase the header side used to build `positions`
+        # and `counts`, so a schema name and its header cell match even when one
+        # carries surrounding space. Lowercasing without trimming let a table its
+        # own read then rejected as `:missing_column` be built.
+        key = normalise(name)
 
         cond do
           # A tab a person edits can end up with a column named twice. Which one
@@ -135,10 +142,16 @@ defmodule Sheetshow.Records do
     end
   end
 
+  # The one rule for turning a column name, from a schema or a tab's header, into
+  # the key both sides match on: trimmed and lower-cased. `normalise/1` is the
+  # same rule but nil for a name that is blank once trimmed, which a header cell
+  # can be and a column key cannot.
+  defp canonical(name), do: name |> to_string() |> String.trim() |> String.downcase()
+
   defp normalise(nil), do: nil
 
   defp normalise(name) do
-    case name |> to_string() |> String.trim() |> String.downcase() do
+    case canonical(name) do
       "" -> nil
       key -> key
     end

@@ -40,19 +40,23 @@ defmodule Sheetshow.Xlsx.Styles do
   # The built-in number formats a file never spells out. Only the ones that
   # decide a value's kind matter here; the rest are numbers either way.
   # ECMA-376 part 1, 18.8.30.
+  # The built-in date and time formats a file leaves unsaid, by id. What each one
+  # *means* is not kept here: `kind/1` reads it off the code, the same as for a
+  # custom format, so there is one classifier and no chance of the table and the
+  # classifier disagreeing (46, `[h]:mm:ss`, is elapsed and reads as a number).
   @builtin %{
-    14 => {"mm-dd-yy", :date},
-    15 => {"d-mmm-yy", :date},
-    16 => {"d-mmm", :date},
-    17 => {"mmm-yy", :date},
-    18 => {"h:mm AM/PM", :time},
-    19 => {"h:mm:ss AM/PM", :time},
-    20 => {"h:mm", :time},
-    21 => {"h:mm:ss", :time},
-    22 => {"m/d/yy h:mm", :datetime},
-    45 => {"mm:ss", :time},
-    46 => {"[h]:mm:ss", :time},
-    47 => {"mmss.0", :time}
+    14 => "mm-dd-yy",
+    15 => "d-mmm-yy",
+    16 => "d-mmm",
+    17 => "mmm-yy",
+    18 => "h:mm AM/PM",
+    19 => "h:mm:ss AM/PM",
+    20 => "h:mm",
+    21 => "h:mm:ss",
+    22 => "m/d/yy h:mm",
+    45 => "mm:ss",
+    46 => "[h]:mm:ss",
+    47 => "mmss.0"
   }
 
   @builtin_numbers %{
@@ -112,6 +116,20 @@ defmodule Sheetshow.Xlsx.Styles do
   def added?(%__MODULE__{added: added}), do: Enum.any?(Map.values(added), &(&1 != []))
 
   @doc """
+  Whether a new style can be written into this table. A styles part whose elements
+  carry a namespace prefix (`<x:styleSheet>`) reads fine, but a new `<xf>` would
+  have to be spliced in with that prefix on itself and every child, which the
+  writer does not do; splicing an unprefixed one would leave an index the file
+  cannot resolve. Such a part is read-only, the way a prefixed worksheet is, and
+  `Sheetshow.Xlsx` refuses a write that would add a style to it.
+  """
+  @spec writable?(t()) :: boolean()
+  def writable?(%__MODULE__{source: source}) when is_binary(source),
+    do: not Regex.match?(~r/<[A-Za-z0-9_.-]+:styleSheet\b/, source)
+
+  def writable?(%__MODULE__{}), do: true
+
+  @doc """
   styles.xml as it should now be written: the original, with what `put/2`
   appended spliced into each list and the counts brought up to date.
 
@@ -159,10 +177,7 @@ defmodule Sheetshow.Xlsx.Styles do
 
   defp numfmt_id(styles, code) do
     builtin =
-      Map.new(
-        Map.merge(@builtin_numbers, Map.new(@builtin, fn {id, {c, _}} -> {id, c} end)),
-        fn {id, c} -> {c, id} end
-      )
+      Map.new(Map.merge(@builtin_numbers, @builtin), fn {id, c} -> {c, id} end)
 
     custom = Map.new(styles.number_formats, fn {id, c} -> {c, id} end)
 
@@ -529,7 +544,10 @@ defmodule Sheetshow.Xlsx.Styles do
   defp background(_fill), do: %{}
 
   # The format code, and what it says the value is. A custom code is read; a
-  # built-in one is looked up, because a file never writes those out.
+  # built-in one is looked up, because a file never writes those out. Either way
+  # the code goes through the same `kind/1`, so an elapsed built-in (46,
+  # `[h]:mm:ss`) is a number like an elapsed custom one, and 36 hours does not
+  # come back as a 12-hour `Time` with the days thrown away.
   defp number_format(id, custom) do
     case Map.fetch(custom, id) do
       {:ok, code} ->
@@ -537,7 +555,7 @@ defmodule Sheetshow.Xlsx.Styles do
 
       :error ->
         case Map.fetch(@builtin, id) do
-          {:ok, {code, kind}} -> {code, kind}
+          {:ok, code} -> {code, kind(code)}
           :error -> {Map.get(@builtin_numbers, id), nil}
         end
     end

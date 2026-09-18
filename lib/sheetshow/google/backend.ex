@@ -150,20 +150,24 @@ defmodule Sheetshow.Google.Backend do
     end
   end
 
+  # `quote_sheet: true` on every read: a whole-sheet name is quoted so Google
+  # reads it as the tab, not a same-named range that would take precedence.
   @impl true
   def read_cells(%Range{} = range, %Workbook{} = workbook) do
-    with {:ok, json} <- get(Range.to_a1(range), workbook), do: {:ok, Google.decode(json)}
+    with {:ok, json} <- get(Range.to_a1(range, quote_sheet: true), workbook),
+         do: {:ok, Google.decode(json)}
   end
 
   @impl true
   def read_rows(%Range{} = range, %Workbook{} = workbook) do
-    with {:ok, json} <- get_values(Range.to_a1(range), workbook),
+    with {:ok, json} <- get_values(Range.to_a1(range, quote_sheet: true), workbook),
          do: {:ok, Google.decode_values(json)}
   end
 
   @impl true
   def read_rows_batch(ranges, %Workbook{} = workbook) when is_list(ranges) do
-    with {:ok, json} <- get_values_batch(Enum.map(ranges, &Range.to_a1/1), workbook),
+    with {:ok, json} <-
+           get_values_batch(Enum.map(ranges, &Range.to_a1(&1, quote_sheet: true)), workbook),
          do: {:ok, Google.decode_value_ranges(json)}
   end
 

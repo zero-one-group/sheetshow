@@ -150,12 +150,28 @@ defmodule Sheetshow.Range do
       "Costs!A:C"
       iex> Sheetshow.Range.to_a1(%Sheetshow.Range{sheet: "Q1 costs"})
       "'Q1 costs'"
-  """
-  @spec to_a1(t()) :: String.t()
-  def to_a1(%__MODULE__{sheet: sheet} = range) do
-    prefix = if sheet, do: A1.quote_sheet(sheet), else: nil
 
-    case {prefix, refs(range)} do
+  `quote_sheet: true` quotes a whole-sheet name even when it would otherwise be
+  bare. Google's values endpoint reads a bare whole-sheet name as a named range
+  of the same name in preference to the sheet, so the read path passes this.
+
+      iex> Sheetshow.Range.to_a1(%Sheetshow.Range{sheet: "Costs"}, quote_sheet: true)
+      "'Costs'"
+  """
+  @spec to_a1(t(), keyword()) :: String.t()
+  def to_a1(%__MODULE__{sheet: sheet} = range, opts \\ []) do
+    refs = refs(range)
+
+    prefix =
+      cond do
+        is_nil(sheet) -> nil
+        # Only a whole-sheet name is ambiguous; `Costs!A1:B2` already reads as
+        # the sheet because a named range carries no `!`.
+        is_nil(refs) and Keyword.get(opts, :quote_sheet, false) -> A1.quote_sheet(sheet, true)
+        true -> A1.quote_sheet(sheet)
+      end
+
+    case {prefix, refs} do
       {nil, nil} -> raise ArgumentError, "a whole-sheet range needs a sheet name"
       {prefix, nil} -> prefix
       {nil, refs} -> refs

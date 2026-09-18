@@ -39,6 +39,23 @@ defmodule Sheetshow.TableTest do
     test "refuses columns that are one column once a header is matched" do
       assert_raise ArgumentError, fn -> Table.new("costs", name: :string, Name: :string) end
     end
+
+    test "refuses a reserved name even when it is padded with spaces" do
+      assert_raise ArgumentError, ~r/reserved/, fn -> Table.new("costs", [{:" id ", :string}]) end
+    end
+
+    test "a schema name with surrounding space round-trips instead of failing its own read" do
+      table = Table.new("Data", [{:" item ", :string}])
+
+      plan =
+        Table.create(table) ++
+          Table.plan!([Table.insert(%{:" item " => "Rent"})], Table.empty(table))
+
+      {:ok, workbook} = Sheetshow.run(plan, Workbook.memory())
+
+      assert [row] = Table.live(Table.read!(table, workbook))
+      assert row.record[:" item "] == "Rent"
+    end
   end
 
   describe "decode" do

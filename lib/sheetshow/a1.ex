@@ -73,10 +73,17 @@ defmodule Sheetshow.A1 do
       "'Q1''s'"
       iex> Sheetshow.A1.quote_sheet("Tab1")
       "'Tab1'"
+
+  `force: true` quotes even a plain name, for the one place a bare name is
+  ambiguous: a whole-sheet reference on Google's values endpoint, where an
+  identically named range would otherwise win over the sheet.
+
+      iex> Sheetshow.A1.quote_sheet("Costs", true)
+      "'Costs'"
   """
-  @spec quote_sheet(String.t()) :: String.t()
-  def quote_sheet(name) when is_binary(name) do
-    if Regex.match?(@plain_sheet, name) and not Regex.match?(@ref_like, name) do
+  @spec quote_sheet(String.t(), boolean()) :: String.t()
+  def quote_sheet(name, force \\ false) when is_binary(name) do
+    if not force and Regex.match?(@plain_sheet, name) and not Regex.match?(@ref_like, name) do
       name
     else
       "'" <> String.replace(name, "'", "''") <> "'"
