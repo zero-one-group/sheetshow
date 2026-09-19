@@ -315,7 +315,7 @@ defmodule Sheetshow.ValuesTest do
       assert request.path == "/v4/spreadsheets/1AbC/values:batchGet"
 
       assert Enum.filter(request.params, &(elem(&1, 0) == "ranges")) == [
-               {"ranges", "expenses!A1:D1"},
+               {"ranges", "expenses!1:1"},
                {"ranges", "expenses!A3:D"}
              ]
     end

@@ -46,21 +46,6 @@ defmodule Sheetshow.Xlsx.Sheet do
     "#GETTING_DATA" => "LOADING"
   }
 
-  # The way back, for writing an error cell out again: a `%CellError{}`'s type to
-  # the text a worksheet spells it with. The keys are what `CellError.new/2` makes
-  # of the tokens above; an error type not here is one Sheetshow did not recognise
-  # on the way in, whose type is already the original text.
-  @error_text %{
-    null_value: "#NULL!",
-    divide_by_zero: "#DIV/0!",
-    value: "#VALUE!",
-    ref: "#REF!",
-    name: "#NAME?",
-    num: "#NUM!",
-    n_a: "#N/A",
-    loading: "#GETTING_DATA"
-  }
-
   @doc """
   Reads one worksheet. `title` names the sheet the cells belong to; `strings`
   and `styles` are the workbook's, since a cell's text and a cell's kind both
@@ -180,7 +165,7 @@ defmodule Sheetshow.Xlsx.Sheet do
       ~s(<c r="#{ref(cell.coord)}"),
       attribute("s", index),
       ~s( t="e"><v>),
-      Xml.escape(error_text(error)),
+      Xml.escape(CellError.to_text(error)),
       "</v></c>"
     ]
 
@@ -207,8 +192,6 @@ defmodule Sheetshow.Xlsx.Sheet do
 
     {rendered, strings, styles}
   end
-
-  defp error_text(%CellError{type: type}), do: Map.get(@error_text, type, type)
 
   # A date written without a number format reads back as the number it is, so
   # one that has none gets the format that makes it a date again, the same
@@ -248,8 +231,8 @@ defmodule Sheetshow.Xlsx.Sheet do
   defp body(value, strings) when is_binary(value) do
     case Strings.put(strings, value) do
       {:inline, strings} ->
-        {~s( t="inlineStr"), [~s(<is><t xml:space="preserve">), Xml.escape(value), "</t></is>"],
-         strings}
+        {~s( t="inlineStr"),
+         [~s(<is><t xml:space="preserve">), Xml.escape_string(value), "</t></is>"], strings}
 
       {index, strings} ->
         {~s( t="s"), ["<v>", Integer.to_string(index), "</v>"], strings}
@@ -474,7 +457,14 @@ defmodule Sheetshow.Xlsx.Sheet do
   defp event(_event, state), do: state
 
   defp finish(state, key) do
-    text = Xml.text(state.chars)
+    # An inline string is escaped the SpreadsheetML way, the same as a shared one;
+    # a `<v>` and a formula are not, so only the inline run is decoded, each run
+    # before it joins the ones before it.
+    text =
+      case key do
+        :inline -> Xml.unescape_string(Xml.text(state.chars))
+        _ -> Xml.text(state.chars)
+      end
 
     value =
       case {key, state.cell[key]} do

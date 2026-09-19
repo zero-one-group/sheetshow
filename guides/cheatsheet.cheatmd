@@ -360,6 +360,7 @@ are the sidebar's.
 | | |
 | --- | --- |
 | `new/2` | Builds one from what Google calls it. |
+| `to_text/1` | The text a spreadsheet shows for the error, which is also what a values read… |
 
 ### Sheetshow.Error
 

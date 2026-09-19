@@ -100,14 +100,42 @@ defmodule Sheetshow.Xlsx.Workbook do
   @spec free_rid(binary()) :: String.t()
   def free_rid(rels_xml) do
     next =
-      ~r/Id="rId(\d+)"/
-      |> Regex.scan(rels_xml)
-      |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+      rels_xml
+      |> rel_ids()
+      |> Enum.map(&rid_number/1)
+      |> Enum.reject(&is_nil/1)
       |> Enum.max(fn -> 0 end)
       |> Kernel.+(1)
 
     "rId#{next}"
   end
+
+  # Every relationship id the file spells, read the way discovery reads them
+  # rather than assumed to be double-quoted `Id="rId1"`: a file that quotes its
+  # attributes with `'` read fine but allocated `rId1` over one already taken, so
+  # a new sheet's relationship and an existing one shared an id and the old tab
+  # resolved to the new, empty part.
+  defp rel_ids(rels_xml) do
+    case Xml.fold(rels_xml, "xl/_rels/workbook.xml.rels", [], fn
+           {:startElement, _uri, ~c"Relationship", _q, attrs}, acc ->
+             [Xml.attr(attrs, ~c"Id") | acc]
+
+           _event, acc ->
+             acc
+         end) do
+      {:ok, ids} -> ids
+      {:error, _} -> []
+    end
+  end
+
+  defp rid_number("rId" <> digits) do
+    case Integer.parse(digits) do
+      {number, ""} -> number
+      _ -> nil
+    end
+  end
+
+  defp rid_number(_id), do: nil
 
   @doc """
   Adds a sheet to the three places a package records one: the relationship that
@@ -152,12 +180,7 @@ defmodule Sheetshow.Xlsx.Workbook do
           %{workbook: binary(), rels: binary(), types: binary()}
   def delete_sheet(parts, part, rid) do
     %{
-      workbook:
-        String.replace(
-          parts.workbook,
-          ~r{<sheet\b[^>]*\s[\w.-]+:id="#{Regex.escape(rid)}"[^>]*/>},
-          ""
-        ),
+      workbook: drop_element(parts.workbook, "sheet", "[\\w.-]+:id", rid),
       rels: drop_relationship(parts.rels, rid),
       types: drop_override(parts.types, part)
     }
@@ -212,23 +235,23 @@ defmodule Sheetshow.Xlsx.Workbook do
     }
   end
 
-  # Removing a relationship by id and a content-type override by part. Both allow
-  # a namespace prefix on the element (`<r:Relationship>`, `<c:Override>`) and
-  # either quote style on the attribute, so removal handles every spelling the
-  # namespace-aware discovery does; otherwise a part could go while a declaration
-  # naming it stayed, which is the dangling reference a reader offers to repair.
-  defp drop_relationship(rels, rid) do
-    String.replace(
-      rels,
-      ~r{<(?:[\w.-]+:)?Relationship\b[^>]*\bId=(?:"#{Regex.escape(rid)}"|'#{Regex.escape(rid)}')[^>]*/>},
-      ""
-    )
-  end
+  defp drop_relationship(rels, rid), do: drop_element(rels, "Relationship", "\\bId", rid)
 
-  defp drop_override(types, part) do
+  defp drop_override(types, part), do: drop_element(types, "Override", "\\bPartName", "/" <> part)
+
+  # Removes an empty element identified by one attribute value, tolerant of every
+  # spelling the SAX discovery accepts: a namespace prefix on the element
+  # (`<r:Relationship>`), either quote style on the attribute, whitespace around
+  # its `=`, and a self-closing tag or a separate closing one. Narrower patterns
+  # left the declaration behind when a file spelled it another valid way, and a
+  # part gone while a declaration naming it stayed is the dangling reference a
+  # reader offers to repair.
+  defp drop_element(xml, element, attr, value) do
+    escaped = Regex.escape(value)
+
     String.replace(
-      types,
-      ~r{<(?:[\w.-]+:)?Override\b[^>]*\bPartName=(?:"/#{Regex.escape(part)}"|'/#{Regex.escape(part)}')[^>]*/>},
+      xml,
+      ~r{<(?:[\w.-]+:)?#{element}\b[^>]*?#{attr}\s*=\s*(?:"#{escaped}"|'#{escaped}')[^>]*?(?:/>|></(?:[\w.-]+:)?#{element}>)},
       ""
     )
   end
@@ -261,12 +284,26 @@ defmodule Sheetshow.Xlsx.Workbook do
   end
 
   # A sheetId is a number a workbook gives a tab and never reuses, so the next
-  # one is past the highest already there rather than the count of them.
+  # one is past the highest already there rather than the count of them. Read
+  # through the parser, not a `sheetId="..."` regex, so the same file the reader
+  # accepts is the file this allocates against.
   defp next_sheet_id(xml) do
-    Regex.scan(~r/sheetId="(\d+)"/, xml)
-    |> Enum.map(fn [_, id] -> String.to_integer(id) end)
-    |> Enum.max(fn -> 0 end)
-    |> Kernel.+(1)
+    ids =
+      case Xml.fold(xml, "xl/workbook.xml", [], fn
+             {:startElement, _uri, ~c"sheet", _q, attrs}, acc ->
+               case Xml.int(attrs, ~c"sheetId") do
+                 nil -> acc
+                 id -> [id | acc]
+               end
+
+             _event, acc ->
+               acc
+           end) do
+        {:ok, ids} -> ids
+        {:error, _} -> []
+      end
+
+    Enum.max([0 | ids]) + 1
   end
 
   defp target(rels, type, base) do

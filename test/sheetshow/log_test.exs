@@ -220,6 +220,31 @@ defmodule Sheetshow.LogTest do
     end
   end
 
+  describe "a cursor read on a widened tab" do
+    test "finds a column a hand-added one pushed right, the way a whole read does" do
+      # A person widened the tab with a "notes" column, so "value" sits in D. A
+      # whole read locates it by name; the cursor read bounded its columns to the
+      # schema's width and truncated it, failing with :missing_column. It now reads
+      # the header whole and reaches the real column.
+      log = Log.new("log", value: :string)
+
+      cells =
+        Sheetshow.stack([
+          Sheetshow.row(["id", "deleted", "notes", "value"]),
+          Sheetshow.rows([["a", "", "n1", "one"], ["b", "", "n2", "two"]])
+        ])
+        |> Sheetshow.put_sheet("log")
+
+      memory = Memory.run!(Sheetshow.plan!(cells, existing_sheets: []), Memory.new())
+      workbook = Sheetshow.Workbook.memory(memory)
+
+      {:ok, [cursor | _]} = Log.read(log, workbook)
+
+      assert {:ok, since} = Log.read(log, workbook, after: cursor)
+      assert Enum.map(since, & &1.record.value) == ["two"]
+    end
+  end
+
   describe "decode/3" do
     test "finds its columns by name, whatever case and spacing they are in" do
       rows = [[" ID ", "Deleted", "ITEM", "cost"], ["a", nil, "Rent", "1000.00"]]

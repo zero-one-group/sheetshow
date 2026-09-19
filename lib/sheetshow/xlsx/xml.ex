@@ -78,6 +78,50 @@ defmodule Sheetshow.Xlsx.Xml do
   end
 
   @doc """
+  Decodes SpreadsheetML string escaping, which is not XML escaping and is not
+  undone by the parser. A character a string cannot spell as itself is written
+  `_xHHHH_` (four hex digits), and a literal underscore that would otherwise
+  start such a run is itself written `_x005F_`. Both read back in one
+  left-to-right pass, so `_x005F_x0041_` is the literal text `_x0041_`, not the
+  letter it would name.
+
+      iex> Sheetshow.Xlsx.Xml.unescape_string("_x0041_")
+      "A"
+      iex> Sheetshow.Xlsx.Xml.unescape_string("_x005F_x0041_")
+      "_x0041_"
+  """
+  @spec unescape_string(String.t()) :: String.t()
+  def unescape_string(text) when is_binary(text) do
+    Regex.replace(~r/_x([0-9A-Fa-f]{4})_/, text, fn _, hex ->
+      <<String.to_integer(hex, 16)::utf8>>
+    end)
+  end
+
+  @doc """
+  Escapes a string the SpreadsheetML way, the inverse of `unescape_string/1`, so
+  a literal `_x0041_` or a control character survives a round trip rather than
+  being read as the character it looks like. XML-escapes the result too, since a
+  written string needs both.
+  """
+  @spec escape_string(String.t()) :: iodata()
+  def escape_string(text) when is_binary(text) do
+    text
+    |> String.replace(~r/_(?=x[0-9A-Fa-f]{4}_)/, "_x005F_")
+    |> escape_controls()
+    |> escape()
+  end
+
+  # Everything below a space bar the tab and newline, the carriage return among
+  # them: a parser folds a literal return into a newline, so the only way to keep
+  # one is to escape it, which is what a writer of these files does.
+  defp escape_controls(text) do
+    String.replace(text, ~r/[\x00-\x08\x0B-\x1F]/, fn <<code>> ->
+      "_x" <>
+        (code |> Integer.to_string(16) |> String.upcase() |> String.pad_leading(4, "0")) <> "_"
+    end)
+  end
+
+  @doc """
   An attribute's value as a string, or nil. Matched on local name alone: a
   writer may declare its namespaces on the root element or on the element that
   uses them, and both are in the wild.

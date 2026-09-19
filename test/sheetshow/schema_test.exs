@@ -178,6 +178,20 @@ defmodule Sheetshow.SchemaTest do
       assert {%{cost: "1.0e-20"}, %{}} = Schema.cast([1.0e-20], cost: :decimal)
     end
 
+    test "a small number just above the cutoff keeps its significant digits" do
+      # 15 fixed decimals rounded 1.2345e-15 to 1.0e-15, throwing the digits away;
+      # the shortest round-tripping form is kept instead.
+      assert {%{cost: printed}, %{}} = Schema.cast([1.2345e-15], cost: :decimal)
+      assert elem(Float.parse(printed), 0) == 1.2345e-15
+    end
+
+    test "a number too large for fixed decimals casts rather than raising" do
+      # float_to_binary with 15 decimals raises on 1.0e308; the shortest form is
+      # written instead, so the lenient cast stays lenient.
+      assert {%{cost: "1.0e308"}, %{}} = Schema.cast([1.0e308], cost: :decimal)
+      assert {%{note: "1.0e308"}, %{}} = Schema.cast([1.0e308], note: :string)
+    end
+
     test "a serial too large to convert is a cast error, not a crash" do
       assert {%{d: nil}, %{d: %Error{reason: :cast}}} = Schema.cast([1.0e308], d: :date)
     end

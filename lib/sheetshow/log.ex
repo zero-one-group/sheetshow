@@ -327,10 +327,13 @@ defmodule Sheetshow.Log do
   that are identical in every respect can stand in for each other, which is
   harmless, because folding either of them gives the same answer.
 
-  At Google it is one request: the header row and the rows from the cursor
-  down, asked for together, so the columns are still found by name rather than
-  assumed. Against a file it is the file: a cursor saves the decoding, not the
-  fetching, because a workbook has to be read whole before any of it can be.
+  At Google it is one request: the header row, read whole, and the rows from the
+  cursor down, asked for together, so the columns are still found by name rather
+  than assumed. The rows are bounded to the schema's width, which A1 needs for a
+  range that starts below the first row; a tab someone widened by hand costs a
+  second request to reach the extra columns rather than dropping them. Against a
+  file it is the file: a cursor saves the decoding, not the fetching, because a
+  workbook has to be read whole before any of it can be.
   """
   @spec read(t(), Workbook.t(), keyword()) :: {:ok, [Event.t()]} | {:error, Error.t()}
   def read(%__MODULE__{} = log, %Workbook{} = workbook, opts \\ []) do
@@ -350,13 +353,14 @@ defmodule Sheetshow.Log do
 
   defp since(log, workbook, %Event{row: row} = cursor, opts) when is_integer(row) do
     ranges = [
-      %Range{sheet: log.sheet, end_row: 0, end_col: last_col(log)},
+      %Range{sheet: log.sheet, end_row: 0},
       %Range{sheet: log.sheet, start_row: row, end_col: last_col(log)}
     ]
 
-    with {:ok, [header, rows]} <- Sheetshow.read_rows(ranges, workbook),
-         {:ok, events} <-
-           decode(rows, log, [header: List.first(header) || [], row: row] ++ opts(opts)) do
+    with {:ok, [header_table, rows]} <- Sheetshow.read_rows(ranges, workbook),
+         header = List.first(header_table) || [],
+         {:ok, rows} <- widen(rows, header, log, workbook, row),
+         {:ok, events} <- decode(rows, log, [header: header, row: row] ++ opts(opts)) do
       confirm(events, cursor)
     end
   end
@@ -365,6 +369,22 @@ defmodule Sheetshow.Log do
     raise ArgumentError,
           "after: takes an event a read gave you, which knows the row it sits on; " <>
             "got #{inspect(cursor)}"
+  end
+
+  # The header row is read whole, its columns unbounded, so a column someone added
+  # to the tab is found by name the way a whole read finds it. The rows from the
+  # cursor down start off the origin, which A1 cannot spell open on both axes, so
+  # their columns are bounded. A tab as wide as its schema, the ordinary case, is
+  # one request; only a tab that turns out wider costs a second read, to reach the
+  # columns the first bound stopped short of rather than drop them.
+  defp widen(rows, header, log, workbook, row) do
+    if length(header) - 1 > last_col(log) do
+      range = %Range{sheet: log.sheet, start_row: row, end_col: length(header) - 1}
+
+      with {:ok, [rows]} <- Sheetshow.read_rows([range], workbook), do: {:ok, rows}
+    else
+      {:ok, rows}
+    end
   end
 
   defp opts(opts), do: Keyword.take(opts, [:strict])

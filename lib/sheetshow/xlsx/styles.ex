@@ -116,16 +116,20 @@ defmodule Sheetshow.Xlsx.Styles do
   def added?(%__MODULE__{added: added}), do: Enum.any?(Map.values(added), &(&1 != []))
 
   @doc """
-  Whether a new style can be written into this table. A styles part whose elements
-  carry a namespace prefix (`<x:styleSheet>`) reads fine, but a new `<xf>` would
-  have to be spliced in with that prefix on itself and every child, which the
-  writer does not do; splicing an unprefixed one would leave an index the file
-  cannot resolve. Such a part is read-only, the way a prefixed worksheet is, and
-  `Sheetshow.Xlsx` refuses a write that would add a style to it.
+  Whether a new style can be written into this table. A styles part whose
+  `styleSheet` or any of the lists a new style splices into (`numFmts`, `fonts`,
+  `fills`, `cellXfs`) carries a namespace prefix (`<x:fonts>`) reads fine, but a
+  new `<xf>` would have to be spliced in with that prefix on itself and every
+  child, which the writer does not do; splicing an unprefixed one into a prefixed
+  list appends a second list and leaves an index the file cannot resolve.
+  Checking the root alone missed a file whose `styleSheet` was unprefixed but
+  whose lists were not. Such a part is read-only, the way a prefixed worksheet is,
+  and `Sheetshow.Xlsx` refuses a write that would add a style to it.
   """
   @spec writable?(t()) :: boolean()
   def writable?(%__MODULE__{source: source}) when is_binary(source),
-    do: not Regex.match?(~r/<[A-Za-z0-9_.-]+:styleSheet\b/, source)
+    do:
+      not Regex.match?(~r/<[A-Za-z0-9_.-]+:(?:styleSheet|numFmts|fonts|fills|cellXfs)\b/, source)
 
   def writable?(%__MODULE__{}), do: true
 

@@ -162,7 +162,7 @@ defmodule Sheetshow.Xlsx.Strings do
     Enum.map(strings, fn string ->
       [
         "<#{prefix}si><#{prefix}t xml:space=\"preserve\">",
-        Xml.escape(string),
+        Xml.escape_string(string),
         "</#{prefix}t></#{prefix}si>"
       ]
     end)
@@ -221,7 +221,8 @@ defmodule Sheetshow.Xlsx.Strings do
        do: %{state | collecting: true, chars: []}
 
   defp event({:endElement, _uri, ~c"t", _q}, %{collecting: true} = state) do
-    %{state | collecting: false, chars: [], current: [Xml.text(state.chars) | state.current]}
+    text = Xml.unescape_string(Xml.text(state.chars))
+    %{state | collecting: false, chars: [], current: [text | state.current]}
   end
 
   # <rPh> carries the phonetic hints a Japanese workbook puts beside a run:

@@ -315,16 +315,28 @@ defmodule Sheetshow.Schema do
   defp printed(value) when is_integer(value), do: Integer.to_string(value)
 
   defp printed(value) when is_float(value) do
-    # Fixed 15 decimals keep a decimal column out of exponent form, which is not
-    # what anyone typed there. But 15 decimals cannot see a value smaller than
-    # 1.0e-15, and rounding a nonzero number to "0" is worse than an exponent, so
-    # such a value falls back to the shortest form that reads back the same.
-    if value != 0.0 and abs(value) < 1.0e-15 do
-      :erlang.float_to_binary(value, [:short])
+    # Plain decimals keep a decimal column out of exponent form, which is not what
+    # anyone typed there, so they are the form to use wherever they round-trip. But
+    # 15 decimals cannot see every value: below about 1.0e-15 they round a nonzero
+    # number to "0", and a large magnitude overflows the fixed format and raises.
+    # Either way the shortest round-tripping form is written instead, in exponent
+    # notation if that is what it takes, since a wrong number and a raised cast are
+    # both worse than an exponent.
+    with {:ok, fixed} <- fixed_decimals(value),
+         true <- round_trips?(fixed, value) do
+      fixed
     else
-      :erlang.float_to_binary(value, [:compact, decimals: 15])
+      _ -> :erlang.float_to_binary(value, [:short])
     end
   end
+
+  defp fixed_decimals(value) do
+    {:ok, :erlang.float_to_binary(value, [:compact, decimals: 15])}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp round_trips?(printed, value), do: match?({^value, ""}, Float.parse(printed))
 
   defp parse(string, parser) do
     case parser.(String.trim(string)) do
