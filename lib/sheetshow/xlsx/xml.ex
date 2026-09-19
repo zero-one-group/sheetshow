@@ -83,18 +83,47 @@ defmodule Sheetshow.Xlsx.Xml do
   `_xHHHH_` (four hex digits), and a literal underscore that would otherwise
   start such a run is itself written `_x005F_`. Both read back in one
   left-to-right pass, so `_x005F_x0041_` is the literal text `_x0041_`, not the
-  letter it would name.
+  letter it would name. A character outside the basic plane is escaped as its two
+  UTF-16 halves, `_xD83D__xDE00_`, which combine into the one scalar they stand
+  for rather than being decoded apart, since a half is not a scalar and no
+  encoding holds it.
 
       iex> Sheetshow.Xlsx.Xml.unescape_string("_x0041_")
       "A"
       iex> Sheetshow.Xlsx.Xml.unescape_string("_x005F_x0041_")
       "_x0041_"
+      iex> Sheetshow.Xlsx.Xml.unescape_string("_xD83D__xDE00_")
+      "😀"
   """
   @spec unescape_string(String.t()) :: String.t()
   def unescape_string(text) when is_binary(text) do
-    Regex.replace(~r/_x([0-9A-Fa-f]{4})_/, text, fn _, hex ->
-      <<String.to_integer(hex, 16)::utf8>>
-    end)
+    Regex.replace(
+      ~r/_x(D[89ABab][0-9A-Fa-f]{2})__x(D[C-Fc-f][0-9A-Fa-f]{2})_|_x([0-9A-Fa-f]{4})_/,
+      text,
+      fn
+        _, high, low, "" -> surrogate_pair(high, low)
+        _, _, _, hex -> code_point(hex)
+      end
+    )
+  end
+
+  # A high surrogate and the low one after it stand together for a single scalar
+  # above the basic plane; the pair is combined the way UTF-16 does rather than
+  # each half decoded on its own, which cannot be done at all.
+  defp surrogate_pair(high, low) do
+    high = String.to_integer(high, 16)
+    low = String.to_integer(low, 16)
+    <<0x10000 + (high - 0xD800) * 0x400 + (low - 0xDC00)::utf8>>
+  end
+
+  # A surrogate with no partner is nothing on its own and no encoding holds it, so
+  # it reads as the replacement character rather than raising and losing the whole
+  # string; every other code point is itself.
+  defp code_point(hex) do
+    case String.to_integer(hex, 16) do
+      code when code in 0xD800..0xDFFF -> "�"
+      code -> <<code::utf8>>
+    end
   end
 
   @doc """
