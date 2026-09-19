@@ -239,19 +239,21 @@ defmodule Sheetshow.Xlsx.Workbook do
 
   defp drop_override(types, part), do: drop_element(types, "Override", "\\bPartName", "/" <> part)
 
-  # Removes an empty element identified by one attribute value, tolerant of every
-  # spelling the SAX discovery accepts: a namespace prefix on the element
-  # (`<r:Relationship>`), either quote style on the attribute, whitespace around
-  # its `=`, and a self-closing tag or a separate closing one. Narrower patterns
-  # left the declaration behind when a file spelled it another valid way, and a
-  # part gone while a declaration naming it stayed is the dangling reference a
-  # reader offers to repair.
+  # Removes an empty element identified by one attribute value. An empty element
+  # has exactly two spellings, `<El .../>` and `<El ...>` then optional whitespace
+  # then `</El>`, so matching both (with a namespace prefix on either tag, either
+  # quote style on the attribute, and whitespace around its `=`) is the whole
+  # grammar rather than one more guess at it. A part gone while a declaration
+  # naming it stayed is the dangling reference a reader offers to repair, and each
+  # narrower pattern before this left the declaration behind on a file that spelled
+  # it another valid way: a prefix, then single quotes, then a separate closing
+  # tag, then whitespace between the tags.
   defp drop_element(xml, element, attr, value) do
     escaped = Regex.escape(value)
 
     String.replace(
       xml,
-      ~r{<(?:[\w.-]+:)?#{element}\b[^>]*?#{attr}\s*=\s*(?:"#{escaped}"|'#{escaped}')[^>]*?(?:/>|></(?:[\w.-]+:)?#{element}>)},
+      ~r{<(?:[\w.-]+:)?#{element}\b[^>]*?#{attr}\s*=\s*(?:"#{escaped}"|'#{escaped}')[^>]*?(?:/>|>\s*</(?:[\w.-]+:)?#{element}>)},
       ""
     )
   end

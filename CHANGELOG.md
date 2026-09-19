@@ -3,6 +3,26 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
+## 0.1.5 (2026-09-19)
+
+A fourth external review pass over 0.1.4, two edge cases the last pass' fixes left
+open, both in the `.xlsx` codec.
+
+- **calcChain cleanup still missed a declaration with whitespace between its tags.**
+  0.1.4 handled a separate closing tag, but only when it followed the opening one
+  immediately; a `<Relationship ...>` and its `Override` with a newline before the
+  close tag were left behind, pointing at a part the encode had already deleted. An
+  empty element has exactly two spellings, `<El .../>` and `<El ...>` then optional
+  whitespace then `</El>`; the removal now matches both, which is the whole grammar
+  rather than one more guess at it.
+- **A shared or inline string escaping a character above the basic plane read as an
+  error.** Such a character is written as its two UTF-16 halves (`_xD83D__xDE00_`
+  for an emoji), and decoding each half on its own raised, since a half is not a
+  scalar, so the whole read came back `:invalid_xlsx`. The halves are combined into
+  the one character they stand for now, a lone half with no partner reads as the
+  replacement character rather than raising, and an escaped literal underscore
+  still reads in the same left-to-right pass.
+
 ## 0.1.4 (2026-09-19)
 
 A third external review pass over 0.1.3, correctness and safety again, most of it

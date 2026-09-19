@@ -683,4 +683,60 @@ defmodule Sheetshow.XlsxTest do
       assert Strings.fetch(back, 1) == "line\rbreak"
     end
   end
+
+  describe "0.1.5 regressions" do
+    test "removing calcChain handles a declaration with whitespace between its tags" do
+      # An expanded declaration can carry whitespace between the tags
+      # (`<Relationship ...>\n</Relationship>`); a pattern that assumed the close
+      # tag followed immediately left it, and its override, pointing at a part the
+      # encode had already deleted.
+      package = Xlsx.new()
+      {:ok, rels} = Zip.fetch(package.entries, "xl/_rels/workbook.xml.rels")
+      {:ok, types} = Zip.fetch(package.entries, "[Content_Types].xml")
+
+      rel =
+        ~s(<Relationship Id="rId99" ) <>
+          ~s(Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain" ) <>
+          ~s(Target="calcChain.xml">\n  </Relationship>)
+
+      override =
+        ~s(<Override PartName="/xl/calcChain.xml" ) <>
+          ~s(ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml">\n  </Override>)
+
+      entries =
+        package.entries
+        |> Zip.put(
+          "xl/_rels/workbook.xml.rels",
+          String.replace(rels, "</Relationships>", rel <> "</Relationships>")
+        )
+        |> Zip.put(
+          "[Content_Types].xml",
+          String.replace(types, "</Types>", override <> "</Types>")
+        )
+        |> Zip.put(
+          "xl/calcChain.xml",
+          ~s(<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>)
+        )
+
+      {:ok, bytes} = Xlsx.encode(%{package | entries: entries})
+      {:ok, after_entries} = Zip.read(bytes)
+      {:ok, after_rels} = Zip.fetch(after_entries, "xl/_rels/workbook.xml.rels")
+      {:ok, after_types} = Zip.fetch(after_entries, "[Content_Types].xml")
+
+      refute after_rels =~ "calcChain"
+      refute after_types =~ "calcChain"
+      assert {:error, _} = Zip.fetch(after_entries, "xl/calcChain.xml")
+    end
+
+    test "a shared string with an escaped surrogate pair reads as the character" do
+      # The decoder converted each _xHHHH_ to a code point on its own and raised on
+      # the high surrogate, so the whole read came back :invalid_xlsx.
+      xml =
+        ~s(<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1">) <>
+          ~s(<si><t>hi _xD83D__xDE00_</t></si></sst>)
+
+      assert {:ok, strings} = Strings.parse(xml)
+      assert Strings.fetch(strings, 0) == "hi 😀"
+    end
+  end
 end
