@@ -361,4 +361,34 @@ defmodule Sheetshow.Xlsx.BackendTest do
       assert read.style == %{italic: true, background: "#00FF00"}
     end
   end
+
+  describe "a formula's cached result" do
+    setup %{path: path} do
+      xml =
+        ~s(<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">) <>
+          ~s(<sheetData><row r="1">) <>
+          ~s(<c r="A1"><f>1+2</f><v>3</v></c>) <>
+          ~s(<c r="B1" t="e"><f>1/0</f><v>#DIV/0!</v></c>) <>
+          ~s(</row></sheetData></worksheet>)
+
+      {:ok, bytes} = Xlsx.new().entries |> Zip.put("xl/worksheets/sheet1.xml", xml) |> Zip.write()
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, bytes)
+      {:ok, workbook} = Sheetshow.connect(Workbook.xlsx(path))
+      %{workbook: workbook}
+    end
+
+    test "a values read gives the computed value, the way Google's does", %{workbook: workbook} do
+      assert {:ok, [[3, "#DIV/0!"]]} = Sheetshow.read_rows("Sheet1!A1:B1", workbook)
+    end
+
+    test "a cell read still keeps the formula, with the result in its metadata", %{
+      workbook: workbook
+    } do
+      assert {:ok, [a1, b1]} = Sheetshow.read_cells("Sheet1!A1:B1", workbook)
+      assert a1.value == {:formula, "=1+2"}
+      assert a1.meta.effective == 3
+      assert b1.meta.effective == %Sheetshow.CellError{type: :divide_by_zero}
+    end
+  end
 end

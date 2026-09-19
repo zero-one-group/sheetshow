@@ -6,7 +6,7 @@ defmodule Sheetshow.Memory.Backend do
 
   @behaviour Sheetshow.Backend
 
-  alias Sheetshow.{Cell, Memory, Range, Result, Workbook}
+  alias Sheetshow.{Cell, CellError, Memory, Range, Result, Workbook}
 
   # A memory applies a plan whole or not at all, keeps styles and dimensions,
   # and resolves an append against the memory it is applied to, at that moment,
@@ -67,7 +67,7 @@ defmodule Sheetshow.Memory.Backend do
 
   defp rows(cells, %Range{start_row: first_row, start_col: first_col}) do
     values =
-      Map.new(cells, fn %Cell{coord: coord, value: value} -> {{coord.row, coord.col}, value} end)
+      Map.new(cells, fn %Cell{coord: coord} = cell -> {{coord.row, coord.col}, value_of(cell)} end)
 
     last_row = cells |> Enum.map(& &1.coord.row) |> Enum.max()
     last_col = cells |> Enum.map(& &1.coord.col) |> Enum.max()
@@ -76,4 +76,16 @@ defmodule Sheetshow.Memory.Backend do
       for col <- first_col..last_col//1, do: Map.get(values, {row, col})
     end
   end
+
+  # A values read gives back computed values, not formulas: at Google a formula's
+  # result comes back, and a file backend carries that same result in
+  # `meta.effective`, the value a spreadsheet cached beside the formula. So a cell
+  # that worked something out reads here as what it worked out. A cached error is
+  # the text such a read would show rather than a `%CellError{}`, which a person
+  # could not have typed and the schema layer does not know. A formula with no
+  # cached result (a memory holds none, computing nothing) reads as the formula it
+  # is, for the schema layer to make of what it can.
+  defp value_of(%Cell{meta: %{effective: %CellError{} = error}}), do: CellError.to_text(error)
+  defp value_of(%Cell{meta: %{effective: effective}}), do: effective
+  defp value_of(%Cell{value: value}), do: value
 end

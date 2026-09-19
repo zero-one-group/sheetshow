@@ -43,4 +43,30 @@ defmodule Sheetshow.CellError do
   def new(type, message \\ nil) when is_binary(type) do
     %__MODULE__{type: Map.get(@types, type, type), message: message}
   end
+
+  # The text a spreadsheet spells each error with, keyed by the atom `new/1`
+  # makes. A type not here was one we did not recognise on the way in, whose type
+  # is already the original text.
+  @text %{
+    error: "#ERROR!",
+    null_value: "#NULL!",
+    divide_by_zero: "#DIV/0!",
+    value: "#VALUE!",
+    ref: "#REF!",
+    name: "#NAME?",
+    num: "#NUM!",
+    n_a: "#N/A",
+    loading: "#GETTING_DATA"
+  }
+
+  @doc """
+  The text a spreadsheet shows for the error, which is also what a values read
+  gives back for it: unlike a cell read, a values read cannot say a `#DIV/0!` is
+  an error rather than someone typing that string, so it arrives as the string.
+
+      iex> Sheetshow.CellError.new("DIVIDE_BY_ZERO") |> Sheetshow.CellError.to_text()
+      "#DIV/0!"
+  """
+  @spec to_text(t()) :: String.t()
+  def to_text(%__MODULE__{type: type}), do: Map.get(@text, type, type)
 end

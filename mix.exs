@@ -1,7 +1,7 @@
 defmodule Sheetshow.MixProject do
   use Mix.Project
 
-  @version "0.1.3"
+  @version "0.1.4"
   @source_url "https://github.com/zero-one-group/sheetshow"
 
   @description "Google Sheets from Elixir, as values, with a small database on a tab " <>

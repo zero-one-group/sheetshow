@@ -3,6 +3,53 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
+## 0.1.4 (2026-09-19)
+
+A third external review pass over 0.1.3, correctness and safety again, most of it
+in the `.xlsx` codec.
+
+- **Adding a sheet could redirect an existing one to an empty part.** A workbook
+  that quoted its relationship attributes with `'` read fine, but the next
+  relationship id was allocated by a `Id="rId..."` regex that saw none of them, so
+  a new sheet claimed `rId1` on top of one already in use and the old tab resolved
+  to the new, empty worksheet. The id, and the next sheet id beside it, are read
+  through the parser now, so the same file the reader accepts is the file they
+  allocate against.
+- **calcChain cleanup missed a valid spelling.** Removing the part left its
+  relationship and content-type override behind when the declaration used
+  whitespace around its `=` or a separate closing tag rather than a self-closing
+  one. Removal is one spelling-agnostic pass now, tolerant of a namespace prefix,
+  either quote style, that whitespace and either closing form, and the same pass
+  removes a deleted sheet's `<sheet>` element.
+- **A namespace-prefixed styles part was only half-detected.** The guard checked
+  the root `<styleSheet>` alone, so a file whose root was unprefixed but whose
+  `<fonts>`, `<fills>` or `<cellXfs>` lists were prefixed slipped through and had a
+  second, unprefixed list appended with an index no cell could resolve. The lists
+  are checked too now, and such a part is read-only, refused with `:unsupported`.
+- **A shared or inline string that looked like an escape read back wrong.** The
+  SpreadsheetML `_xHHHH_` escaping (a control character, or a literal underscore
+  written `_x005F_`) is not XML escaping and the parser does not undo it; a literal
+  `_x0041_` came back as the encoded `_x005F_x0041_` and a carriage return as
+  `_x000D_`. It is decoded on read, in one pass so `_x005F_x0041_` is the literal
+  `_x0041_` and not `A`, and encoded to match on write.
+- **A values read over a file ignored a formula's cached result.** `read_rows/2`
+  returned the formula rather than the value a spreadsheet cached beside it, so a
+  `Table` or `Log` field over `.xlsx` cast the formula and came back nil. It gives
+  the computed value now, the way Google's values read does, with a cached error as
+  its text; `read_cells/2` still returns the formula, with the result in its
+  metadata.
+- **A number cast into a text column lost precision or raised.** Fixed 15 decimals
+  rounded a value just above `1.0e-15` to fewer digits than it had, and raised
+  outright on a magnitude like `1.0e308`. The shortest round-tripping form is
+  written whenever the fixed one would not read back the same, so every finite
+  float round-trips and the lenient cast stays lenient.
+- **A log cursor read truncated columns a whole read kept.** The header and the
+  rows from the cursor were both bounded to the schema's width, so a column added
+  to the tab by hand pushed a real column out of range and the read failed with
+  `:missing_column` where a whole read found it by name. The header is read whole
+  now, and a tab wider than its schema costs a second request rather than dropping
+  the columns.
+
 ## 0.1.3 (2026-09-18)
 
 A second external review pass over 0.1.2, all correctness or safety, all in the
