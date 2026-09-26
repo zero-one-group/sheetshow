@@ -364,7 +364,8 @@ defmodule Sheetshow.Google do
   defp put_present(map, key, value), do: Map.put(map, key, value)
 
   defp cell(data, coord) do
-    kind = data |> get_in(["effectiveFormat", "numberFormat", "type"]) |> temporal()
+    format = get_in(data, ["effectiveFormat", "numberFormat"]) || %{}
+    kind = temporal(format["type"], format["pattern"])
 
     meta =
       %{}
@@ -379,14 +380,26 @@ defmodule Sheetshow.Google do
     }
   end
 
-  defp temporal("DATE"), do: :date
-  defp temporal("DATE_TIME"), do: :datetime
-  defp temporal("TIME"), do: :time
-  defp temporal(_other), do: nil
+  # An elapsed duration (`[h]:mm:ss`, which Sheets offers as a duration and
+  # types as a time) is a count of hours, not a time of day: 36 hours is the
+  # number 1.5, and reading it as a `Time` would throw the whole days away. It
+  # stays the number it is, as it does in an `.xlsx` file.
+  defp temporal(type, pattern) when is_binary(pattern) do
+    section = pattern |> String.split(";") |> List.first()
+    if Regex.match?(~r/\[[hms]+\]/i, section), do: nil, else: temporal(type, nil)
+  end
+
+  defp temporal("DATE", _pattern), do: :date
+  defp temporal("DATE_TIME", _pattern), do: :datetime
+  defp temporal("TIME", _pattern), do: :time
+  defp temporal(_other, _pattern), do: nil
 
   defp decode_value(nil, _kind), do: nil
   defp decode_value(%{"numberValue" => number}, nil), do: number
-  defp decode_value(%{"numberValue" => number}, kind), do: Value.from_serial(number, kind)
+
+  # A format says how a number is shown, not what it is: a timestamp shown as a
+  # date keeps its time, and a number too large to be a date stays a number.
+  defp decode_value(%{"numberValue" => number}, kind), do: Value.read_serial(number, kind)
   defp decode_value(%{"stringValue" => string}, _kind), do: string
   defp decode_value(%{"boolValue" => boolean}, _kind), do: boolean
   defp decode_value(%{"formulaValue" => formula}, _kind), do: {:formula, formula}

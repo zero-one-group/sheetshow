@@ -27,7 +27,7 @@ defmodule Sheetshow.Memory do
   answer to, which is the way to use one in a test.
   """
 
-  alias Sheetshow.{Cell, Coord, Error, Op, Range, Result}
+  alias Sheetshow.{Cell, CellError, Coord, Error, Op, Range, Result}
 
   defstruct sheets: %{}
 
@@ -205,6 +205,10 @@ defmodule Sheetshow.Memory do
 
   # Writing a cell with nothing in it clears what was there, as an empty
   # CellData does at Google.
+  #
+  # What a reader learnt about a cell's value (what it worked out to, the text it
+  # showed) is about the value that was there, not the one being written: a cell
+  # read, changed and written back would otherwise read back its old result.
   defp put_cells(sheet, title, cells) do
     Enum.reduce(cells, sheet, fn %Cell{coord: coord} = cell, acc ->
       key = {coord.row, coord.col}
@@ -213,15 +217,22 @@ defmodule Sheetshow.Memory do
         if blank?(cell) do
           Map.delete(acc.cells, key)
         else
-          Map.put(acc.cells, key, Cell.put_sheet(cell, title))
+          Map.put(acc.cells, key, %{Cell.put_sheet(cell, title) | meta: learnt(cell)})
         end
 
       %{acc | cells: cells}
     end)
   end
 
+  # A cell that holds an error and nothing else (a `#N/A` somebody typed into a
+  # file) has the error for a value, kept where a reader keeps it; written back
+  # as it was read, it is that error again rather than an empty cell.
+  defp blank?(%Cell{value: nil, meta: %{effective: %CellError{}}}), do: false
   defp blank?(%Cell{value: nil, style: style}), do: map_size(style) == 0
   defp blank?(%Cell{}), do: false
+
+  defp learnt(%Cell{value: nil, meta: %{effective: %CellError{}} = meta}), do: meta
+  defp learnt(%Cell{meta: meta}), do: Map.drop(meta, [:effective, :formatted])
 
   defp next_row(sheet) do
     sheet.cells |> Map.keys() |> Enum.map(&elem(&1, 0)) |> Enum.max(fn -> -1 end) |> Kernel.+(1)

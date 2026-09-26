@@ -23,6 +23,13 @@ defmodule Sheetshow.Xlsx do
   only as fresh as the program that wrote the file, which is what
   `Sheetshow.Backend.supports?(workbook, :evaluates_formulas)` says out loud.
 
+  A tab Sheetshow writes goes back without its formulas' cached answers, since
+  nothing here can tell which of them the write left true, and the workbook is
+  marked to be worked out again (`fullCalcOnLoad`) when a spreadsheet next opens
+  it. Until one does and saves the file, a values read of such a formula gives
+  the formula, and a schema column over it reads as a `:cast` error that says
+  so: loud, where keeping the old answers would have been quietly wrong.
+
   This module is the read side of the codec. Writing goes through
   `Sheetshow.Workbook.xlsx/2` and `Sheetshow.run/2`, which rewrite one tab of
   the file and copy everything else across untouched.
@@ -138,6 +145,9 @@ defmodule Sheetshow.Xlsx do
       book: %{
         part: "xl/workbook.xml",
         sheets: [%{title: "Sheet1", part: "xl/worksheets/sheet1.xml", rid: "rId1"}],
+        names: ["Sheet1"],
+        date1904: false,
+        rewritten: false,
         strings: "xl/sharedStrings.xml",
         styles: nil
       },
@@ -167,7 +177,7 @@ defmodule Sheetshow.Xlsx do
 
       %{part: part} ->
         with {:ok, xml} <- Zip.fetch(package.entries, part) do
-          Sheet.parse(xml, title, package.strings, package.styles)
+          Sheet.parse(xml, title, package.strings, package.styles, date1904?(package))
         end
     end
   end
@@ -240,7 +250,8 @@ defmodule Sheetshow.Xlsx do
            package
            | entries: Zip.put(package.entries, part, IO.iodata_to_binary(xml)),
              strings: strings,
-             styles: styles
+             styles: styles,
+             book: %{package.book | rewritten: true}
          }}
     end
   end
@@ -250,30 +261,68 @@ defmodule Sheetshow.Xlsx do
   # entry in the workbook that gives it a name and a tab position, and the
   # content type that says what kind of part it is. A sheet missing from any one
   # of those is a workbook a reader refuses to open.
+  #
+  # A name is taken whatever kind of tab has it (a chart sheet's counts), and
+  # whatever its case, since a spreadsheet tells tab names apart without it. A
+  # name no spreadsheet can hold (one of `: \\ / ? * [ ]` in it, an apostrophe at
+  # either end, more than 31 characters) is refused rather than written into a
+  # file that then does not open.
   @spec add_sheet(t(), String.t()) :: {:ok, t()} | {:error, Error.t()}
   def add_sheet(%__MODULE__{} = package, title) do
-    if Enum.any?(package.book.sheets, &(&1.title == title)) do
-      {:error,
-       Error.new(:duplicate_sheet, "the sheet #{inspect(title)} is already there", sheet: title)}
-    else
-      with {:ok, parts} <- parts(package) do
-        base = Path.dirname(package.book.part) <> "/worksheets"
-        part = Workbook.free_part(Zip.names(package.entries), base, "sheet")
-        rid = Workbook.free_rid(parts.rels)
-        written = Workbook.add_sheet(parts, title, part, rid)
+    taken = package.book.names
 
-        entries =
-          package.entries
-          |> Zip.put(part, @empty_sheet)
-          |> put_parts(package, written)
+    cond do
+      Enum.any?(taken, &(String.downcase(&1) == String.downcase(title))) ->
+        {:error,
+         Error.new(:duplicate_sheet, "the sheet #{inspect(title)} is already there", sheet: title)}
 
-        book = %{
-          package.book
-          | sheets: package.book.sheets ++ [%{title: title, part: part, rid: rid}]
-        }
+      (why = unwritable_title(title)) != nil ->
+        {:error,
+         Error.new(:unsupported, "an .xlsx sheet cannot be called #{inspect(title)}: #{why}",
+           sheet: title
+         )}
 
-        {:ok, %{package | entries: entries, book: book}}
-      end
+      true ->
+        with {:ok, parts} <- parts(package) do
+          base = Workbook.directory(package.book.part) |> Path.join("worksheets")
+          part = Workbook.free_part(Zip.names(package.entries), base, "sheet")
+          rid = Workbook.free_rid(parts.rels)
+
+          with {:ok, written} <- Workbook.add_sheet(parts, title, part, rid) do
+            entries =
+              package.entries
+              |> Zip.put(part, @empty_sheet)
+              |> put_parts(package, written)
+
+            book = %{
+              package.book
+              | sheets: package.book.sheets ++ [%{title: title, part: part, rid: rid}],
+                names: taken ++ [title]
+            }
+
+            {:ok, %{package | entries: entries, book: book}}
+          end
+        end
+    end
+  end
+
+  # What Excel refuses in a sheet name, which is what a file has to live with.
+  defp unwritable_title(title) do
+    cond do
+      String.length(title) > 31 ->
+        "a sheet name is at most 31 characters"
+
+      String.match?(title, ~r{[:\\/?*\[\]]}) ->
+        "a sheet name cannot hold any of : \\ / ? * [ ]"
+
+      String.starts_with?(title, "'") or String.ends_with?(title, "'") ->
+        "a sheet name cannot start or end with an apostrophe"
+
+      String.match?(title, ~r/[\x00-\x1F]/) ->
+        "a sheet name cannot hold a control character"
+
+      true ->
+        nil
     end
   end
 
@@ -287,21 +336,78 @@ defmodule Sheetshow.Xlsx do
 
       %{part: part, rid: rid} ->
         with {:ok, parts} <- parts(package) do
-          written = Workbook.delete_sheet(parts, part, rid)
+          written = Workbook.delete_sheet(parts, part, rid, title)
+          {entries, types} = drop_reachable(package.entries, part, written.types)
 
-          entries =
-            package.entries
-            |> Zip.delete(part)
-            |> put_parts(package, written)
+          entries = put_parts(entries, package, %{written | types: types})
 
+          # A formula elsewhere that read the deleted sheet now reads nothing,
+          # and its cached answer says otherwise, so the workbook is marked to
+          # be worked out again, as it is when a sheet is written.
           book = %{
             package.book
-            | sheets: Enum.reject(package.book.sheets, &(&1.title == title))
+            | sheets: Enum.reject(package.book.sheets, &(&1.title == title)),
+              names: List.delete(package.book.names, title),
+              rewritten: true
           }
 
           {:ok, %{package | entries: entries, book: book}}
         end
     end
+  end
+
+  # The part, its relationships part, and every part only it reached: the
+  # comments, the drawing and its charts, a table, the printer settings. Left
+  # behind, they were unreachable but not gone, and the next sheet given the
+  # part's name picked its relationships up again, the deleted sheet's comments
+  # and all. A part something else still points at (a pivot cache, an image two
+  # drawings share) stays. Each part taken out takes its content-type override
+  # with it.
+  defp drop_reachable(entries, part, types) do
+    names = Zip.names(entries)
+
+    references =
+      for name <- names, String.ends_with?(name, ".rels"), into: %{} do
+        {:ok, xml} = Zip.fetch(entries, name)
+        {name, Workbook.targets(xml, name)}
+      end
+
+    doomed = doomed([part], MapSet.new(), references)
+
+    Enum.reduce(doomed, {entries, types}, fn gone, {entries, types} ->
+      entries = entries |> Zip.delete(gone) |> Zip.delete(Workbook.rels_path(gone))
+      {entries, Workbook.drop_part_override(types, gone)}
+    end)
+  end
+
+  defp doomed([], found, _references), do: found
+
+  defp doomed([part | rest], found, references) do
+    if MapSet.member?(found, part) do
+      doomed(rest, found, references)
+    else
+      found = MapSet.put(found, part)
+      own = Map.get(references, Workbook.rels_path(part), [])
+
+      # A target goes too when nothing outside what is going points at it.
+      kept =
+        for {rels, targets} <- references,
+            not MapSet.member?(found, source(rels)),
+            target <- targets,
+            into: MapSet.new(),
+            do: target
+
+      orphans = Enum.reject(own, &(MapSet.member?(kept, &1) or MapSet.member?(found, &1)))
+      doomed(orphans ++ rest, found, references)
+    end
+  end
+
+  # The part a relationships part belongs to: `xl/worksheets/_rels/sheet1.xml.rels`
+  # is `xl/worksheets/sheet1.xml`'s.
+  defp source(rels) do
+    directory = rels |> Path.dirname() |> Path.dirname()
+    base = rels |> Path.basename() |> String.replace_suffix(".rels", "")
+    if directory == ".", do: base, else: Path.join(directory, base)
   end
 
   @doc false
@@ -325,10 +431,23 @@ defmodule Sheetshow.Xlsx do
   def encode(%__MODULE__{} = package) do
     with {:ok, package} <- write_strings(package),
          {:ok, package} <- write_styles(package),
-         {:ok, package} <- drop_calc_chain(package) do
+         {:ok, package} <- drop_calc_chain(package),
+         {:ok, package} <- recalculate(package) do
       Zip.write(package.entries)
     end
   end
+
+  # A sheet Sheetshow has written holds formulas with no result beside them, and
+  # new values that formulas elsewhere depend on, so whoever opens the file next
+  # is asked to work everything out again rather than trust what it finds.
+  defp recalculate(%__MODULE__{book: %{rewritten: true}} = package) do
+    with {:ok, xml} <- Zip.fetch(package.entries, package.book.part) do
+      entries = Zip.put(package.entries, package.book.part, Workbook.full_calc_on_load(xml))
+      {:ok, %{package | entries: entries}}
+    end
+  end
+
+  defp recalculate(package), do: {:ok, package}
 
   # calcChain.xml names cells by position, so a stale one makes a reader offer to
   # repair the file. It goes out with the relationship and the content-type
@@ -353,7 +472,7 @@ defmodule Sheetshow.Xlsx do
   end
 
   defp assumed_calc_chain(package) do
-    Path.dirname(package.book.part) <> "/calcChain.xml"
+    package.book.part |> Workbook.directory() |> Path.join("calcChain.xml")
   end
 
   defp write_strings(%{book: %{strings: part}} = package) when is_binary(part) do
@@ -391,17 +510,19 @@ defmodule Sheetshow.Xlsx do
       # No styles.xml at all, and something now needs one.
       Styles.added?(package.styles) ->
         with {:ok, parts} <- parts(package) do
-          part = Path.dirname(package.book.part) <> "/styles.xml"
+          part = package.book.part |> Workbook.directory() |> Path.join("styles.xml")
           rid = Workbook.free_rid(parts.rels)
-          written = Workbook.add_styles(parts, part, rid)
-          xml = IO.iodata_to_binary(Styles.render(package.styles))
 
-          entries =
-            package.entries
-            |> Zip.put(part, xml)
-            |> put_parts(package, Map.put(written, :workbook, parts.workbook))
+          with {:ok, written} <- Workbook.add_styles(parts, part, rid) do
+            xml = IO.iodata_to_binary(Styles.render(package.styles))
 
-          {:ok, %{package | entries: entries, book: %{package.book | styles: part}}}
+            entries =
+              package.entries
+              |> Zip.put(part, xml)
+              |> put_parts(package, Map.put(written, :workbook, parts.workbook))
+
+            {:ok, %{package | entries: entries, book: %{package.book | styles: part}}}
+          end
         end
 
       true ->
@@ -427,6 +548,8 @@ defmodule Sheetshow.Xlsx do
   end
 
   defp unknown(package, title), do: Error.unknown_sheet(title, titles(package))
+
+  defp date1904?(%__MODULE__{book: book}), do: book.date1904
 
   defp put(memory, title, %Sheet{} = sheet) do
     Memory.put_sheet(memory, title, sheet.cells, sheet.col_widths, sheet.row_heights)

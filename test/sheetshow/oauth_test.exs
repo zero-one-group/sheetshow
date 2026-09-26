@@ -382,4 +382,18 @@ defmodule Sheetshow.OAuthTest do
       assert_receive {:request, %{path: "/v4/spreadsheets/1AbC"}}
     end
   end
+
+  describe "the 0.1.6 review" do
+    test "a misspelt :http option is refused, as it is everywhere else" do
+      account = UserAccount.new(@id, "secret")
+
+      assert_raise ArgumentError, fn ->
+        OAuth.authorize("code", account, redirect_uri: "http://127.0.0.1:1", http: [timout: 1])
+      end
+    end
+
+    test "an empty code is no code" do
+      assert {:error, %Error{reason: :auth}} = OAuth.code("http://127.0.0.1:8910/?code=")
+    end
+  end
 end

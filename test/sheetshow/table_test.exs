@@ -778,4 +778,29 @@ defmodule Sheetshow.TableTest do
       end
     end
   end
+
+  describe "the 0.1.6 review" do
+    test "a formula in the id column flags its row, on a read and on a refresh" do
+      table = Table.new("t", item: :string)
+      {:ok, workbook} = Sheetshow.run(Table.create(table), Workbook.memory())
+
+      {:ok, workbook} =
+        [
+          Sheetshow.Cell.new("t!A2", {:formula, "=\"x\"&ROW()"}),
+          Sheetshow.Cell.new("t!C2", "Rent"),
+          Sheetshow.Cell.new("t!A3", "b"),
+          Sheetshow.Cell.new("t!C3", "Food")
+        ]
+        |> Sheetshow.plan!()
+        |> Sheetshow.run(workbook)
+
+      assert {:ok, snapshot} = Table.read(table, workbook)
+      assert [%Row{id: nil, errors: %{id: _}}, %Row{id: "b"}] = snapshot.rows
+      assert {:ok, %{rows: [%Row{id: "b", row: 2}]}} = Table.refresh(snapshot, workbook)
+    end
+
+    test "a row's id has something in it besides spaces" do
+      assert_raise ArgumentError, fn -> Table.insert(%{}, id: "  ") end
+    end
+  end
 end

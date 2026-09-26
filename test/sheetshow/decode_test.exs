@@ -56,19 +56,58 @@ defmodule Sheetshow.DecodeTest do
     end
 
     test "a serial number is a date when its format says it is" do
-      for {type, expected} <- [
-            {"DATE", ~D[2026-09-12]},
-            {"DATE_TIME", ~N[2026-09-12 00:00:00]},
-            {"TIME", ~T[00:00:00]}
+      for {serial, type, expected} <- [
+            {46_277, "DATE", ~D[2026-09-12]},
+            {46_277, "DATE_TIME", ~N[2026-09-12 00:00:00]},
+            {0.25, "TIME", ~T[06:00:00]}
           ] do
         cell =
           one(%{
-            "userEnteredValue" => %{"numberValue" => 46_277},
+            "userEnteredValue" => %{"numberValue" => serial},
             "effectiveFormat" => %{"numberFormat" => %{"type" => type, "pattern" => "p"}}
           })
 
         assert cell.value == expected
       end
+    end
+
+    # A format is how a value is shown: a timestamp shown as a date or as a time
+    # keeps the part the format hides, or a read and a write would drop it.
+    test "a moment its format shows only part of keeps the rest" do
+      for {serial, type, expected} <- [
+            {46_277.75, "DATE", ~N[2026-09-12 18:00:00]},
+            {46_277.75, "TIME", ~N[2026-09-12 18:00:00]}
+          ] do
+        cell =
+          one(%{
+            "userEnteredValue" => %{"numberValue" => serial},
+            "effectiveFormat" => %{"numberFormat" => %{"type" => type, "pattern" => "p"}}
+          })
+
+        assert cell.value == expected
+      end
+    end
+
+    test "an elapsed duration stays the number of days it is" do
+      cell =
+        one(%{
+          "userEnteredValue" => %{"numberValue" => 1.5},
+          "effectiveFormat" => %{"numberFormat" => %{"type" => "TIME", "pattern" => "[h]:mm:ss"}}
+        })
+
+      assert cell.value == 1.5
+    end
+
+    test "a number too large to be a moment stays a number, and is read at once" do
+      cell =
+        one(%{
+          "userEnteredValue" => %{"numberValue" => 356_938_035_643_809},
+          "effectiveValue" => %{"numberValue" => 1.0e305},
+          "effectiveFormat" => %{"numberFormat" => %{"type" => "DATE", "pattern" => "p"}}
+        })
+
+      assert cell.value == 356_938_035_643_809
+      assert cell.meta.effective == 1.0e305
     end
 
     test "and stays a number when it does not" do

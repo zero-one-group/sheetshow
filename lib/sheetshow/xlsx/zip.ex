@@ -27,6 +27,8 @@ defmodule Sheetshow.Xlsx.Zip do
   @stored 0
   @deflated 8
 
+  @utf8_flag 0x0800
+
   @zip64 0xFFFFFFFF
   @zip64_count 0xFFFF
 
@@ -37,7 +39,7 @@ defmodule Sheetshow.Xlsx.Zip do
 
   defmodule Entry do
     @moduledoc false
-    defstruct [:name, :method, :crc, :comp_size, :size, :mtime, :mdate, :data]
+    defstruct [:name, :method, :crc, :comp_size, :size, :mtime, :mdate, :data, utf8: false]
 
     @type t :: %__MODULE__{
             name: String.t(),
@@ -47,7 +49,8 @@ defmodule Sheetshow.Xlsx.Zip do
             size: non_neg_integer(),
             mtime: non_neg_integer(),
             mdate: non_neg_integer(),
-            data: binary()
+            data: binary(),
+            utf8: boolean()
           }
   end
 
@@ -60,8 +63,19 @@ defmodule Sheetshow.Xlsx.Zip do
   @spec read(binary()) :: {:ok, t()} | {:error, Error.t()}
   def read(bin) when is_binary(bin) do
     with {:ok, offset, count} <- end_of_central_directory(bin),
-         {:ok, central} <- slice(bin, offset, "the central directory") do
-      entries(central, count, bin, [])
+         {:ok, central} <- slice(bin, offset, "the central directory"),
+         {:ok, entries} <- entries(central, count, bin, []) do
+      unique(entries)
+    end
+  end
+
+  # Two entries of one name are two answers to what that part holds, and readers
+  # disagree about which to believe (Sheetshow took the first, openpyxl the
+  # last), so such a file is refused rather than read as one of them.
+  defp unique(entries) do
+    case entries |> Enum.frequencies_by(& &1.name) |> Enum.find(fn {_name, n} -> n > 1 end) do
+      nil -> {:ok, entries}
+      {name, _n} -> {:error, invalid("it holds #{name} more than once")}
     end
   end
 
@@ -100,7 +114,8 @@ defmodule Sheetshow.Xlsx.Zip do
 
     fresh = fn entry ->
       %{
-        (entry || %Entry{name: name, mtime: @epoch_time, mdate: @epoch_date})
+        (entry ||
+           %Entry{name: name, mtime: @epoch_time, mdate: @epoch_date, utf8: not ascii?(name)})
         | method: @deflated,
           crc: :erlang.crc32(content),
           comp_size: byte_size(deflated),
@@ -221,7 +236,8 @@ defmodule Sheetshow.Xlsx.Zip do
             size: size,
             mtime: mtime,
             mdate: mdate,
-            data: data
+            data: data,
+            utf8: Bitwise.band(flags, @utf8_flag) != 0
           }
 
           entries(rest, remaining - 1, bin, [entry | acc])
@@ -293,7 +309,7 @@ defmodule Sheetshow.Xlsx.Zip do
     end
   end
 
-  defp inflate(%Entry{method: @stored} = entry), do: {:ok, entry.data}
+  defp inflate(%Entry{method: @stored} = entry), do: checked(entry, entry.data)
 
   defp inflate(%Entry{method: @deflated} = entry) do
     z = :zlib.open()
@@ -302,7 +318,7 @@ defmodule Sheetshow.Xlsx.Zip do
       :ok = :zlib.inflateInit(z, -15)
       content = z |> :zlib.inflate(entry.data) |> IO.iodata_to_binary()
       :zlib.inflateEnd(z)
-      {:ok, content}
+      checked(entry, content)
     rescue
       ErlangError ->
         {:error, invalid("#{entry.name} does not inflate: the file is damaged")}
@@ -322,7 +338,24 @@ defmodule Sheetshow.Xlsx.Zip do
      )}
   end
 
+  # What the checksum is for: a part whose bytes are not the ones the writer
+  # stored reads as an error, not as whatever the damage made of it.
+  defp checked(%Entry{crc: crc}, content) do
+    if :erlang.crc32(content) == crc do
+      {:ok, content}
+    else
+      {:error, invalid("a part's checksum does not match its bytes: the file is damaged")}
+    end
+  end
+
   # --- writing ---
+
+  defp ascii?(name), do: name == for(<<c <- name>>, c < 128, into: "", do: <<c>>)
+
+  # Bit 11 says the name is UTF-8. Without it a reader takes the name for IBM
+  # code page 437, and `café.xml` comes back as something else.
+  defp flags(%Entry{utf8: true}), do: @utf8_flag
+  defp flags(%Entry{}), do: 0
 
   defp deflate(content) do
     z = :zlib.open()
@@ -339,7 +372,7 @@ defmodule Sheetshow.Xlsx.Zip do
 
   defp local(%Entry{} = entry) do
     [
-      <<@local::little-32, 20::little-16, 0::little-16, entry.method::little-16,
+      <<@local::little-32, 20::little-16, flags(entry)::little-16, entry.method::little-16,
         entry.mtime::little-16, entry.mdate::little-16, entry.crc::little-32,
         entry.comp_size::little-32, entry.size::little-32, byte_size(entry.name)::little-16,
         0::little-16>>,
@@ -350,10 +383,11 @@ defmodule Sheetshow.Xlsx.Zip do
 
   defp central(%Entry{} = entry, offset) do
     [
-      <<@central::little-32, 20::little-16, 20::little-16, 0::little-16, entry.method::little-16,
-        entry.mtime::little-16, entry.mdate::little-16, entry.crc::little-32,
-        entry.comp_size::little-32, entry.size::little-32, byte_size(entry.name)::little-16,
-        0::little-16, 0::little-16, 0::little-16, 0::little-16, 0::little-32, offset::little-32>>,
+      <<@central::little-32, 20::little-16, 20::little-16, flags(entry)::little-16,
+        entry.method::little-16, entry.mtime::little-16, entry.mdate::little-16,
+        entry.crc::little-32, entry.comp_size::little-32, entry.size::little-32,
+        byte_size(entry.name)::little-16, 0::little-16, 0::little-16, 0::little-16, 0::little-16,
+        0::little-32, offset::little-32>>,
       entry.name
     ]
   end

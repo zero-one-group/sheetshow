@@ -56,7 +56,7 @@ defmodule Sheetshow.OAuth do
   the listener left as an exercise.
   """
 
-  alias Sheetshow.{Error, Google, UserAccount}
+  alias Sheetshow.{Error, Google, HTTP, UserAccount}
 
   @auth_uri "https://accounts.google.com/o/oauth2/v2/auth"
 
@@ -170,7 +170,7 @@ defmodule Sheetshow.OAuth do
            found: params["state"]
          )}
 
-      is_binary(params["code"]) ->
+      is_binary(params["code"]) and params["code"] != "" ->
         {:ok, params["code"]}
 
       true ->
@@ -230,12 +230,11 @@ defmodule Sheetshow.OAuth do
           {:ok, UserAccount.t()} | {:error, Error.t()}
   def authorize(code, %UserAccount{} = account, opts) when is_binary(code) do
     opts = Keyword.validate!(opts, @exchange_options)
+    # Checked the way `Sheetshow.Client.new/2` checks its own, so a misspelt
+    # timeout is an error here too rather than silently the default.
+    http = Keyword.validate!(Keyword.get(opts, :http, []), HTTP.options())
 
-    Google.Backend.exchange(
-      exchange_request(code, account, opts),
-      account,
-      Keyword.get(opts, :http, [])
-    )
+    Google.Backend.exchange(exchange_request(code, account, opts), account, http)
   end
 
   @doc "Same as `authorize/3`, raising on failure."

@@ -233,4 +233,39 @@ defmodule Sheetshow.Google.BackendTest do
     assert one["updateCells"]["start"]["columnIndex"] == 0
     assert two["updateCells"]["start"]["columnIndex"] == 2
   end
+
+  describe "the 0.1.6 review" do
+    test "a tab no reply names is remembered by the id the plan asked for" do
+      url = TestServer.start([{200, ~s({"replies":[{},{}]})}])
+      workbook = workbook(url, token: token()) |> Map.put(:sheets, %{"Costs" => 0})
+
+      plan = Sheetshow.plan!(Sheetshow.row([1], sheet: "log"), existing_sheets: ["Costs"])
+      assert {:ok, workbook} = Sheetshow.run(plan, workbook)
+      assert workbook.sheets["log"] == Sheetshow.Google.sheet_id("log", %{"Costs" => 0})
+    end
+
+    test "a redirect is not followed, and the token does not go with it" do
+      elsewhere = TestServer.start([{200, ~s({"sheets":[]})}])
+      url = TestServer.start([{302, "", "text/plain", [{"location", elsewhere <> "/stolen"}]}])
+
+      assert {:error, %Error{reason: :http} = error} =
+               Sheetshow.fetch_sheets(workbook(url, token: token()))
+
+      assert error.details.status == 302
+      assert_receive {:request, _first}
+      refute_receive {:request, %{path: "/stolen"}}, 200
+    end
+
+    test "the token endpoint's quota is the quota", %{pem: pem} do
+      url =
+        TestServer.start([
+          {429, ~s({"error":"rate_limit_exceeded"}), "application/json", [{"retry-after", "7"}]}
+        ])
+
+      workbook = workbook(url, credentials: credentials(pem, url <> "/token"))
+
+      assert {:error, %Error{reason: :rate_limited} = error} = Sheetshow.authenticate(workbook)
+      assert error.details.retry_after == 7
+    end
+  end
 end

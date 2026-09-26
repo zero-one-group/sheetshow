@@ -23,6 +23,9 @@ defmodule Sheetshow.Xlsx.Workbook do
   @type t :: %{
           part: String.t(),
           sheets: [sheet()],
+          names: [String.t()],
+          date1904: boolean(),
+          rewritten: boolean(),
           strings: String.t() | nil,
           styles: String.t() | nil
         }
@@ -48,7 +51,7 @@ defmodule Sheetshow.Xlsx.Workbook do
     base = directory(workbook_part)
 
     with {:ok, rels} <- relationships(rels_xml, rels_part),
-         {:ok, listed} <- sheets(workbook_xml, workbook_part) do
+         {:ok, %{sheets: listed, date1904: date1904}} <- sheets(workbook_xml, workbook_part) do
       by_id = Map.new(rels, &{&1.id, &1})
 
       sheets =
@@ -62,6 +65,13 @@ defmodule Sheetshow.Xlsx.Workbook do
        %{
          part: workbook_part,
          sheets: sheets,
+         # Every name in `<sheets>`, a chart sheet's among them: a name a tab
+         # already has is one a new tab cannot take, whatever kind of tab it is.
+         names: Enum.map(listed, & &1.title),
+         date1904: date1904,
+         # Whether a write has changed what a formula could compute, which
+         # `Sheetshow.Xlsx.encode/1` answers with a request to recalculate.
+         rewritten: false,
          strings: target(rels, @shared_strings, base),
          styles: target(rels, @styles, base)
        }}
@@ -89,11 +99,26 @@ defmodule Sheetshow.Xlsx.Workbook do
 
   @doc "A part name under `base` that nothing in the package is using yet."
   @spec free_part([String.t()], String.t(), String.t()) :: String.t()
+  #
+  # Nor one whose relationships part is still there: a worksheet part that goes
+  # while its `_rels` stays would hand its comments, drawings and tables to the
+  # next part given its name.
   def free_part(taken, base, prefix) do
+    taken = MapSet.new(taken)
+
     Enum.find_value(1..100_000, fn n ->
-      name = "#{base}/#{prefix}#{n}.xml"
-      if name not in taken, do: name
+      name = if base == "", do: "#{prefix}#{n}.xml", else: "#{base}/#{prefix}#{n}.xml"
+      if not MapSet.member?(taken, name) and not MapSet.member?(taken, rels_path(name)), do: name
     end)
+  end
+
+  @doc "The directory a part is in, `\"\"` for one at the package root."
+  @spec directory(String.t()) :: String.t()
+  def directory(part) do
+    case Path.dirname(part) do
+      "." -> ""
+      directory -> directory
+    end
   end
 
   @doc "A relationship id the file is not already using."
@@ -143,13 +168,19 @@ defmodule Sheetshow.Xlsx.Workbook do
   position, and the content types that say what kind of part it is. A sheet
   missing from any one of them is a workbook a reader refuses to open.
   """
+  #
+  # Each of the three is spliced into by a plain string match on its closing tag
+  # (`</sheets>`, `</Relationships>`, `</Types>`), which a part that spells its
+  # elements with a namespace prefix does not have. Such a part reads fine, so
+  # rather than write the worksheet and quietly register it nowhere (a tab
+  # `run/2` reported and no later read could find), the add is refused.
   @spec add_sheet(
           %{workbook: binary(), rels: binary(), types: binary()},
           String.t(),
           String.t(),
           String.t()
         ) ::
-          %{workbook: binary(), rels: binary(), types: binary()}
+          {:ok, %{workbook: binary(), rels: binary(), types: binary()}} | {:error, Error.t()}
   def add_sheet(parts, title, part, rid) do
     sheet_id = next_sheet_id(parts.workbook)
 
@@ -157,13 +188,35 @@ defmodule Sheetshow.Xlsx.Workbook do
       ~s(<sheet name="#{Xml.escape(title)}" sheetId="#{sheet_id}" ) <>
         ~s(r:id="#{rid}" xmlns:r="#{@relationships_ns}"/>)
 
-    %{
-      workbook: insert_sheet(parts.workbook, element),
-      rels:
-        insert_rel(parts.rels, rid, @worksheet, Path.basename(part) |> then(&"worksheets/#{&1}")),
-      types: insert_override(parts.types, "/" <> part, @worksheet_type)
-    }
+    with {:ok, workbook} <-
+           inserted(insert_sheet(parts.workbook, element), parts.workbook, "workbook"),
+         {:ok, rels} <-
+           inserted(
+             insert_rel(parts.rels, rid, @worksheet, "worksheets/" <> Path.basename(part)),
+             parts.rels,
+             "workbook relationships"
+           ),
+         {:ok, types} <-
+           inserted(
+             insert_override(parts.types, "/" <> part, @worksheet_type),
+             parts.types,
+             "content types"
+           ) do
+      {:ok, %{workbook: workbook, rels: rels, types: types}}
+    end
   end
+
+  defp inserted(same, same, what) do
+    {:error,
+     Error.new(
+       :unsupported,
+       "the #{what} part spells its elements with a namespace prefix, which Sheetshow reads " <>
+         "but cannot add to, so the change is refused rather than written half-registered",
+       part: what
+     )}
+  end
+
+  defp inserted(changed, _original, _what), do: {:ok, changed}
 
   @doc """
   Takes a sheet back out of all three.
@@ -175,25 +228,266 @@ defmodule Sheetshow.Xlsx.Workbook do
   @spec delete_sheet(
           %{workbook: binary(), rels: binary(), types: binary()},
           String.t(),
+          String.t(),
           String.t()
         ) ::
           %{workbook: binary(), rels: binary(), types: binary()}
-  def delete_sheet(parts, part, rid) do
+  #
+  # Two things in workbook.xml point at a sheet by its position in `<sheets>`
+  # rather than by name: a defined name's `localSheetId` (a print area, an
+  # autofilter's hidden range) and the workbook view's `activeTab` and
+  # `firstSheet`. Taking a sheet out moves every position after it, so those are
+  # moved with it: a name that belonged to the deleted sheet goes, one on a later
+  # sheet counts down, and a view left past the end comes back inside it. Left
+  # alone, the print area of the sheet after the deleted one became the print
+  # area of the sheet after that, and LibreOffice refused a file whose name
+  # pointed past the last sheet. A name elsewhere that refers to the deleted
+  # sheet by name reads `#REF!` instead, which is what a spreadsheet does itself.
+  def delete_sheet(parts, part, rid, title) do
+    position = sheet_position(parts.workbook, rid)
+
+    workbook =
+      parts.workbook
+      |> drop_element("sheet", "[\\w.-]+:id", rid)
+      |> renumber(position, count_sheets(parts.workbook) - 1, title)
+
     %{
-      workbook: drop_element(parts.workbook, "sheet", "[\\w.-]+:id", rid),
+      workbook: workbook,
       rels: drop_relationship(parts.rels, rid),
       types: drop_override(parts.types, part)
     }
   end
 
+  # Where the sheet with this relationship id sits in `<sheets>`, counting every
+  # kind of sheet, since a chart sheet has a position too.
+  defp sheet_position(xml, rid) do
+    xml
+    |> sheet_ids()
+    |> Enum.find_index(&(&1 == rid))
+  end
+
+  defp count_sheets(xml), do: xml |> sheet_ids() |> length()
+
+  defp sheet_ids(xml) do
+    case Xml.fold(xml, "xl/workbook.xml", [], fn
+           {:startElement, _uri, ~c"sheet", _q, attrs}, acc -> [Xml.attr(attrs, ~c"id") | acc]
+           _event, acc -> acc
+         end) do
+      {:ok, ids} -> Enum.reverse(ids)
+      {:error, _} -> []
+    end
+  end
+
+  defp renumber(xml, nil, _left, _title), do: xml
+
+  defp renumber(xml, position, left, title) do
+    xml
+    |> renumber_names(position, title)
+    |> renumber_view("activeTab", position, left)
+    |> renumber_view("firstSheet", position, left)
+  end
+
+  # An attribute value, a quoted run taken whole so a `>` inside one is not the
+  # end of the tag.
+  @attrs ~S{(?:[^>"']|"[^"]*"|'[^']*')*?}
+
+  defp renumber_names(xml, position, title) do
+    Regex.replace(
+      ~r{<((?:[\w.-]+:)?)definedName\b(#{@attrs})(/>|>(.*?)</(?:[\w.-]+:)?definedName>)}s,
+      xml,
+      fn whole, prefix, attrs, _close, content ->
+        case local_sheet(attrs) do
+          ^position ->
+            ""
+
+          local when is_integer(local) and local > position ->
+            "<#{prefix}definedName" <>
+              set_attr(attrs, "localSheetId", Integer.to_string(local - 1)) <>
+              ">" <> unrefer(content, title) <> "</#{prefix}definedName>"
+
+          _other ->
+            if content == "" do
+              whole
+            else
+              "<#{prefix}definedName#{attrs}>" <>
+                unrefer(content, title) <> "</#{prefix}definedName>"
+            end
+        end
+      end
+    )
+  end
+
+  defp local_sheet(attrs) do
+    case Regex.run(~r{\slocalSheetId\s*=\s*(?:"(\d+)"|'(\d+)')}, attrs) do
+      [_, digits] -> String.to_integer(digits)
+      [_, "", digits] -> String.to_integer(digits)
+      nil -> nil
+    end
+  end
+
+  defp set_attr(attrs, name, value) do
+    Regex.replace(~r{(\s#{name}\s*=\s*)(?:"[^"]*"|'[^']*')}, attrs, fn _, lead ->
+      lead <> ~s("#{value}")
+    end)
+  end
+
+  # A reference to the deleted sheet by name, in a defined name's formula, is a
+  # reference to nothing: `#REF!`, the way a spreadsheet writes one. The formula
+  # is XML text, so it is compared unescaped and written back escaped.
+  #
+  # A quoted name is read whole, so `'X''Old'!` (the sheet `X'Old`) is not the
+  # sheet `Old` with something in front of it; a bare one has to stand alone,
+  # not follow a name character or an external workbook's `[1]`.
+  defp unrefer(content, title) do
+    text = unescape(content)
+    pattern = ~r{'((?:[^']|'')*)'!|(?<![\w.'\]])#{Regex.escape(title)}!}u
+
+    replaced =
+      Regex.replace(pattern, text, fn
+        "'" <> _ = whole, "" -> whole
+        _whole, "" -> "#REF!"
+        whole, quoted -> if String.replace(quoted, "''", "'") == title, do: "#REF!", else: whole
+      end)
+
+    if replaced == text, do: content, else: IO.iodata_to_binary(Xml.escape(replaced))
+  end
+
+  defp unescape(text) do
+    Regex.replace(~r/&(?:#(\d+)|#x([0-9A-Fa-f]+)|(amp|lt|gt|quot|apos));/, text, fn
+      _, decimal, "", "" -> <<String.to_integer(decimal)::utf8>>
+      _, "", hex, "" -> <<String.to_integer(hex, 16)::utf8>>
+      _, "", "", "amp" -> "&"
+      _, "", "", "lt" -> "<"
+      _, "", "", "gt" -> ">"
+      _, "", "", "quot" -> ~s(")
+      _, "", "", "apos" -> "'"
+    end)
+  end
+
+  # A view's position after the delete: one less when it was past the deleted
+  # sheet, and never past the last sheet left.
+  defp renumber_view(xml, name, position, left) do
+    Regex.replace(
+      ~r{(<(?:[\w.-]+:)?workbookView\b#{@attrs}\s#{name}\s*=\s*)(?:"(\d+)"|'(\d+)')},
+      xml,
+      fn _whole, lead, double, single ->
+        value = String.to_integer(if double == "", do: single, else: double)
+        value = if value > position, do: value - 1, else: value
+        lead <> ~s("#{max(min(value, left - 1), 0)}")
+      end
+    )
+  end
+
+  @doc """
+  workbook.xml asking whoever opens it next to work every formula out again.
+
+  Sheetshow evaluates nothing, and a sheet it has written holds formulas with no
+  result beside them and cells other formulas depend on with new values in them.
+  A spreadsheet that trusts the results it finds in a file would show the old
+  ones; `fullCalcOnLoad` is the flag that says not to. It is what openpyxl sets
+  for the same reason, and a spreadsheet clears it when it next saves.
+  """
+  @spec full_calc_on_load(binary()) :: binary()
+  def full_calc_on_load(xml) do
+    cond do
+      Regex.match?(~r{<(?:[\w.-]+:)?calcPr\b#{@attrs}\sfullCalcOnLoad\s*=}, xml) ->
+        Regex.replace(
+          ~r{(<(?:[\w.-]+:)?calcPr\b#{@attrs}\sfullCalcOnLoad\s*=\s*)(?:"[^"]*"|'[^']*')},
+          xml,
+          fn _, lead -> lead <> ~s("1") end,
+          global: false
+        )
+
+      Regex.match?(~r{<(?:[\w.-]+:)?calcPr\b}, xml) ->
+        Regex.replace(
+          ~r{<((?:[\w.-]+:)?)calcPr\b},
+          xml,
+          fn _, prefix -> "<#{prefix}calcPr fullCalcOnLoad=\"1\"" end,
+          global: false
+        )
+
+      true ->
+        insert_calc_pr(xml)
+    end
+  end
+
+  # `calcPr` comes after `sheets` and the three optional elements that may
+  # follow it (`functionGroups`, `externalReferences`, `definedNames`), and
+  # before everything else, so it goes after the last of those that is there.
+  defp insert_calc_pr(xml) do
+    closes = [
+      ~r{</(?:[\w.-]+:)?definedNames>|<(?:[\w.-]+:)?definedNames\s*/>},
+      ~r{</(?:[\w.-]+:)?externalReferences>},
+      ~r{</(?:[\w.-]+:)?functionGroups>|<(?:[\w.-]+:)?functionGroups\b#{@attrs}/>},
+      ~r{</(?:[\w.-]+:)?sheets>|<(?:[\w.-]+:)?sheets\s*/>}
+    ]
+
+    prefix =
+      case Regex.run(~r{<([\w.-]+:)?workbook\b}, xml) do
+        [_, prefix] -> prefix
+        _ -> ""
+      end
+
+    case Enum.find(closes, &Regex.match?(&1, xml)) do
+      nil ->
+        xml
+
+      pattern ->
+        Regex.replace(
+          pattern,
+          xml,
+          fn close -> close <> "<#{prefix}calcPr fullCalcOnLoad=\"1\"/>" end,
+          global: false
+        )
+    end
+  end
+
+  @doc """
+  The parts a relationships part points at inside the package, resolved: what a
+  part stops being reachable through when that relationships part goes. An
+  external target (a hyperlink, a linked workbook) is not a part.
+  """
+  @spec targets(binary(), String.t()) :: [String.t()]
+  def targets(rels_xml, rels_part) do
+    base = rels_part |> Path.dirname() |> Path.dirname() |> then(&if(&1 == ".", do: "", else: &1))
+
+    case Xml.fold(rels_xml, rels_part, [], fn
+           {:startElement, _uri, ~c"Relationship", _q, attrs}, acc ->
+             if Xml.attr(attrs, ~c"TargetMode") == "External" or
+                  Xml.attr(attrs, ~c"Target") == nil,
+                do: acc,
+                else: [resolve(Xml.attr(attrs, ~c"Target"), base) | acc]
+
+           _event, acc ->
+             acc
+         end) do
+      {:ok, targets} -> Enum.reverse(targets)
+      {:error, _} -> []
+    end
+  end
+
+  @doc "Takes a part's content-type override out."
+  @spec drop_part_override(binary(), String.t()) :: binary()
+  def drop_part_override(types, part), do: drop_override(types, part)
+
   @doc "Declares a styles part that the package did not have."
   @spec add_styles(%{rels: binary(), types: binary()}, String.t(), String.t()) ::
-          %{rels: binary(), types: binary()}
+          {:ok, %{rels: binary(), types: binary()}} | {:error, Error.t()}
   def add_styles(parts, part, rid) do
-    %{
-      rels: insert_rel(parts.rels, rid, @styles, Path.basename(part)),
-      types: insert_override(parts.types, "/" <> part, @styles_type)
-    }
+    with {:ok, rels} <-
+           inserted(
+             insert_rel(parts.rels, rid, @styles, Path.basename(part)),
+             parts.rels,
+             "workbook relationships"
+           ),
+         {:ok, types} <-
+           inserted(
+             insert_override(parts.types, "/" <> part, @styles_type),
+             parts.types,
+             "content types"
+           ) do
+      {:ok, %{rels: rels, types: types}}
+    end
   end
 
   @calc_chain "http://schemas.openxmlformats.org/officeDocument/2006/relationships/calcChain"
@@ -248,12 +542,17 @@ defmodule Sheetshow.Xlsx.Workbook do
   # narrower pattern before this left the declaration behind on a file that spelled
   # it another valid way: a prefix, then single quotes, then a separate closing
   # tag, then whitespace between the tags.
+  #
+  # The attributes around the one that identifies the element are read as quoted
+  # runs, taken whole, because a `>` inside an attribute value is valid XML (a
+  # sheet named `a>b`, written by a writer that did not escape it) and ended the
+  # tag early for a pattern that stopped at the first one.
   defp drop_element(xml, element, attr, value) do
     escaped = Regex.escape(value)
 
     String.replace(
       xml,
-      ~r{<(?:[\w.-]+:)?#{element}\b[^>]*?#{attr}\s*=\s*(?:"#{escaped}"|'#{escaped}')[^>]*?(?:/>|>\s*</(?:[\w.-]+:)?#{element}>)},
+      ~r{<(?:[\w.-]+:)?#{element}\b#{@attrs}\s#{attr}\s*=\s*(?:"#{escaped}"|'#{escaped}')#{@attrs}(?:/>|>\s*</(?:[\w.-]+:)?#{element}>)},
       ""
     )
   end
@@ -325,13 +624,6 @@ defmodule Sheetshow.Xlsx.Workbook do
 
   defp normalize(path), do: path |> Path.expand("/") |> String.trim_leading("/")
 
-  defp directory(part) do
-    case Path.dirname(part) do
-      "." -> ""
-      directory -> directory
-    end
-  end
-
   defp relationships(xml, part) do
     Xml.fold(xml, part, [], fn
       {:startElement, _uri, ~c"Relationship", _q, attrs}, acc ->
@@ -353,17 +645,23 @@ defmodule Sheetshow.Xlsx.Workbook do
     end
   end
 
+  # The `<sheet>` elements in tab order, and the date system: a workbook that
+  # says `<workbookPr date1904="1"/>` counts its days from 1904-01-01.
   defp sheets(xml, part) do
-    Xml.fold(xml, part, [], fn
+    Xml.fold(xml, part, %{sheets: [], date1904: false}, fn
       {:startElement, _uri, ~c"sheet", _q, attrs}, acc ->
-        [%{title: Xml.attr(attrs, ~c"name"), rid: Xml.attr(attrs, ~c"id")} | acc]
+        sheet = %{title: Xml.attr(attrs, ~c"name"), rid: Xml.attr(attrs, ~c"id")}
+        %{acc | sheets: [sheet | acc.sheets]}
+
+      {:startElement, _uri, ~c"workbookPr", _q, attrs}, acc ->
+        %{acc | date1904: Xml.flag(attrs, ~c"date1904", false)}
 
       _event, acc ->
         acc
     end)
     |> case do
-      {:ok, []} -> {:error, missing("the workbook lists no sheets", part)}
-      {:ok, sheets} -> {:ok, Enum.reverse(sheets)}
+      {:ok, %{sheets: []}} -> {:error, missing("the workbook lists no sheets", part)}
+      {:ok, found} -> {:ok, %{found | sheets: Enum.reverse(found.sheets)}}
       {:error, _} = error -> error
     end
   end

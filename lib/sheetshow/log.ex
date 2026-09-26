@@ -207,7 +207,11 @@ defmodule Sheetshow.Log do
     end
   end
 
-  defp row_cells(%Event{id: id} = event, _row, _schema) when not is_binary(id) do
+  defp row_cells(%Event{id: id} = event, row, schema) do
+    if Records.id?(id), do: id_row(event, row, schema), else: missing_id(event)
+  end
+
+  defp missing_id(event) do
     {:error,
      Error.new(
        :missing_id,
@@ -216,7 +220,7 @@ defmodule Sheetshow.Log do
      )}
   end
 
-  defp row_cells(%Event{} = event, row, schema) do
+  defp id_row(%Event{} = event, row, schema) do
     with {:ok, values} <- encode(event, schema) do
       flag = if event.deleted, do: [cell(row, 1, true)], else: []
 

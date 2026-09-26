@@ -161,4 +161,19 @@ defmodule Sheetshow.ServiceAccountTest do
 
     assert_raise Error, fn -> ServiceAccount.from_file!(Path.join(dir, "nope.json")) end
   end
+
+  describe "the 0.1.6 review" do
+    test "a key that cannot sign the assertion is refused when the file is read", %{
+      public: public
+    } do
+      pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPublicKey, public)])
+      ec = :public_key.generate_key({:namedCurve, :secp256r1})
+      ec_pem = :public_key.pem_encode([:public_key.pem_entry_encode(:ECPrivateKey, ec)])
+
+      for key <- [pem, ec_pem] do
+        assert {:error, %Error{reason: :invalid_credentials}} =
+                 ServiceAccount.from_json(json(%{"private_key" => key}))
+      end
+    end
+  end
 end

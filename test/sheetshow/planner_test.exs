@@ -167,4 +167,40 @@ defmodule Sheetshow.PlannerTest do
              ["Food", nil]
            ]
   end
+
+  describe "the 0.1.6 review" do
+    test "padding holds room in a layout and clears nothing on the sheet" do
+      {:ok, memory} =
+        Memory.run(Sheetshow.plan!(Sheetshow.col(~w(n1 n2 n3), sheet: "r")), Memory.new(["r"]))
+
+      block =
+        Sheetshow.stack([
+          Sheetshow.rows([[1, 2]], col: 2) |> Sheetshow.pad_below(1),
+          Sheetshow.rows([[3, 4]], col: 2)
+        ])
+
+      assert Sheetshow.max_row(block) == 2
+      {:ok, memory} = Memory.run(Sheetshow.plan!(block, sheet: "r"), memory)
+
+      assert "r!A1:A3" |> Memory.read!(memory) |> Enum.map(& &1.value) == ~w(n1 n2 n3)
+    end
+
+    test "a cell with a coordinate no sheet has is refused, not written somewhere unseen" do
+      for coord <- [
+            %Sheetshow.Coord{row: -1, col: 0, sheet: "s"},
+            %Sheetshow.Coord{row: 0, col: -1, sheet: "s"},
+            %Sheetshow.Coord{row: 0, col: 0, sheet: ""}
+          ] do
+        assert {:error, %Error{reason: :invalid_cell}} =
+                 Sheetshow.plan([Cell.new(coord, 1)], existing_sheets: [])
+      end
+    end
+
+    test "text that is not UTF-8 is refused before it reaches a backend" do
+      assert {:error, %Error{reason: :invalid_value}} =
+               Sheetshow.plan([Cell.new("s!A1", <<"Caf", 233>>)])
+
+      assert_raise ArgumentError, fn -> AddSheet.new(<<"Caf", 233>>) end
+    end
+  end
 end

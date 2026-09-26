@@ -70,8 +70,10 @@ defmodule Sheetshow.Store.WebDAV do
         case response.status do
           status when status in 200..299 -> version(store, response)
           412 -> {:error, Store.conflict(store, conflicted(store, precondition))}
-          # Some servers answer a failed If-None-Match with 409 rather than 412.
-          409 -> {:error, Store.conflict(store, conflicted(store, precondition))}
+          # Not a conflict: a 409 to a PUT is how WebDAV says the folder the file
+          # would go in is not there (RFC 4918, 9.7.1), and Nextcloud says exactly
+          # that with it. Read as `:conflict`, the answer to it (read again, plan
+          # again, write again) would never stop failing.
           status -> {:error, http(store, status, response, "PUT")}
         end
       end
@@ -164,13 +166,23 @@ defmodule Sheetshow.Store.WebDAV do
 
   # --- the request ---
 
+  # Headers of your own go on every request, beside the Basic header a username
+  # and password make, which replaces any `authorization` among them. Given both,
+  # the headers used to be dropped without a word.
   defp auth(%Store{options: options}) do
+    headers = Keyword.get(options, :headers, [])
+
     case {Keyword.get(options, :username), Keyword.get(options, :password)} do
       {username, password} when is_binary(username) and is_binary(password) ->
-        [{"authorization", "Basic " <> Base.encode64("#{username}:#{password}")}]
+        basic = {"authorization", "Basic " <> Base.encode64("#{username}:#{password}")}
+
+        [
+          basic
+          | Enum.reject(headers, fn {name, _} -> String.downcase(name) == "authorization" end)
+        ]
 
       _ ->
-        Keyword.get(options, :headers, [])
+        headers
     end
   end
 
@@ -196,6 +208,7 @@ defmodule Sheetshow.Store.WebDAV do
         "account's own when the account has two-factor authentication or signs in elsewhere."
 
   defp explain(403), do: ": the credentials are known but not allowed to write here"
+  defp explain(409), do: ": the folder the file would go in is not there"
   defp explain(423), do: ": the file is locked by somebody else"
   defp explain(507), do: ": the server is out of room"
   defp explain(_status), do: ""

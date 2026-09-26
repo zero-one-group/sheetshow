@@ -182,4 +182,39 @@ defmodule Sheetshow.Store.LocalTest do
       assert store.location == "costs.xlsx"
     end
   end
+
+  describe "the 0.1.6 review" do
+    @tag :tmp_dir
+    test "a write through a symbolic link lands in the file it points at", %{tmp_dir: dir} do
+      target = Path.join(dir, "synced.xlsx")
+      link = Path.join(dir, "costs.xlsx")
+      File.write!(target, "old")
+      File.ln_s!(target, link)
+
+      store = Store.local(link)
+      {:ok, {"old", version}} = Store.read(store)
+      assert {:ok, _} = Store.write(store, "new", version)
+
+      assert {:ok, %File.Stat{type: :symlink}} = File.lstat(link)
+      assert File.read!(target) == "new"
+    end
+
+    @tag :tmp_dir
+    test "and a relative link's `..` is the real directory's parent", %{tmp_dir: dir} do
+      real = Path.join(dir, "drive")
+      File.mkdir_p!(Path.join(real, "sync"))
+      File.mkdir_p!(Path.join(real, "shared"))
+      File.write!(Path.join([real, "shared", "costs.xlsx"]), "old")
+      home = Path.join(dir, "home")
+      File.mkdir_p!(home)
+      File.ln_s!(Path.join(real, "sync"), Path.join(home, "sync"))
+      File.ln_s!("../shared/costs.xlsx", Path.join([real, "sync", "costs.xlsx"]))
+
+      path = Path.join([home, "sync", "costs.xlsx"])
+      store = Store.local(path)
+      {:ok, {"old", version}} = Store.read(store)
+      assert {:ok, _} = Store.write(store, "new", version)
+      assert File.read!(path) == "new"
+    end
+  end
 end

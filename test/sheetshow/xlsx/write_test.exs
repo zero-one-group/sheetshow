@@ -314,7 +314,8 @@ defmodule Sheetshow.Xlsx.WriteTest do
     test "a sheet emptied of cells loses its dimension hint and its cols" do
       package = opened("openpyxl")
       sheet = costs(package)
-      {bin, reopened} = rewritten(package, "Costs", %{sheet | cells: [], col_widths: %{}})
+      emptied = %{sheet | cells: [], col_widths: %{}, row_heights: %{}, rows: %{}}
+      {bin, reopened} = rewritten(package, "Costs", emptied)
 
       xml = part(bin, "xl/worksheets/sheet1.xml")
       refute xml =~ "<dimension"

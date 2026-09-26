@@ -48,9 +48,12 @@ defmodule Sheetshow.Xlsx.Xml do
   Text as it can go inside an element or an attribute.
 
   The four that need escaping somewhere, so one function is safe in both places
-  rather than two that have to be told apart. Characters XML 1.0 does not allow
-  at all (the control codes below space, bar tab, newline and return) are
-  dropped rather than written, because a file holding one does not open.
+  rather than two that have to be told apart, and the tab, newline and return
+  as character references: an attribute value read back has each of those
+  turned into a space unless it was written as a reference, so a sheet named
+  with a tab in it came back named with a space. Characters XML 1.0 does not
+  allow at all (the other control codes below space) are dropped rather than
+  written, because a file holding one does not open.
 
       iex> Sheetshow.Xlsx.Xml.escape(~s(a & b < c)) |> IO.iodata_to_binary()
       "a &amp; b &lt; c"
@@ -63,6 +66,9 @@ defmodule Sheetshow.Xlsx.Xml do
     |> String.replace("<", "&lt;")
     |> String.replace(">", "&gt;")
     |> String.replace(~s("), "&quot;")
+    |> String.replace("\t", "&#9;")
+    |> String.replace("\n", "&#10;")
+    |> String.replace("\r", "&#13;")
   end
 
   @doc """
@@ -189,18 +195,38 @@ defmodule Sheetshow.Xlsx.Xml do
   count should read back as.
   """
   @spec parse_number(String.t(), term()) :: number() | term()
+  #
+  # Read as `xsd:double` reads: surrounding whitespace is not part of the number,
+  # and `.5` and `5.` are numbers, which `Float.parse/1` alone refuses. A cell
+  # holding one read as nothing and was erased by the next write.
   def parse_number(text, default \\ nil) do
+    text = String.trim(text)
+
     case Integer.parse(text) do
       {int, ""} ->
         int
 
       _ ->
-        case Float.parse(text) do
+        case Float.parse(pointed(text)) do
           {float, ""} -> float
           _ -> default
         end
     end
   end
+
+  # A leading or trailing point with no digit on that side, given one.
+  defp pointed(text) do
+    case Regex.run(~r/\A([+-]?)(\d*)\.(\d*)((?:[eE][+-]?\d+)?)\z/, text) do
+      [_, sign, whole, fraction, exponent] when whole != "" or fraction != "" ->
+        sign <> zero(whole) <> "." <> zero(fraction) <> exponent
+
+      _ ->
+        text
+    end
+  end
+
+  defp zero(""), do: "0"
+  defp zero(digits), do: digits
 
   @doc """
   An xlsx colour (`AARRGGBB`, alpha first) as the `#RRGGBB` a style wants.

@@ -102,11 +102,17 @@ defmodule Sheetshow.Google.Backend do
     end
   end
 
+  # A token endpoint answers a refusal as a JSON error with a 400, and that is
+  # the token's business (`Sheetshow.Token.from_response/2`). The quota is not
+  # a refusal, and gets the reason of its own it has everywhere else.
   defp post_form(%{url: url, form: form}, http) do
     headers = [{"content-type", @form}]
 
     with {:ok, response} <- HTTP.request(:post, url, headers, URI.encode_query(form), http) do
-      json(response, url)
+      case response do
+        %{status: 429} -> ok_json(response, url)
+        _other -> json(response, url)
+      end
     end
   end
 
@@ -146,7 +152,17 @@ defmodule Sheetshow.Google.Backend do
              client.http
            ),
          {:ok, json} <- ok_json(response, url) do
-      {:ok, Workbook.put_sheets(workbook, remember(plan, json, workbook.sheets))}
+      {:ok, Workbook.put_sheets(workbook, remember(plan, json, workbook.sheets, claimed(body)))}
+    end
+  end
+
+  # The id each AddSheet asked for. Google makes the tab with the id it is asked
+  # for or refuses the batch, so this is the tab's id whatever the reply says,
+  # and it is what stands in when no reply names the title: a tab remembered with
+  # no id would have its next write sent to sheet 0, the first tab.
+  defp claimed(%{requests: requests}) do
+    for %{addSheet: %{properties: %{sheetId: id, title: title}}} <- requests, into: %{} do
+      {title, id}
     end
   end
 
@@ -232,13 +248,18 @@ defmodule Sheetshow.Google.Backend do
   # add after (an unordered `Map.drop |> Map.merge`) forgot the order and left
   # the deleted tab behind. An added tab's id comes from its reply; a delete
   # answers with nothing, so its title is simply taken back out.
-  defp remember(plan, json, sheets) do
+  defp remember(plan, json, sheets, claimed) do
     ids = added(json)
 
     Enum.reduce(plan, sheets, fn
-      %Op.AddSheet{title: title}, acc -> Map.put(acc, title, Map.get(ids, title))
-      %Op.DeleteSheet{title: title}, acc -> Map.delete(acc, title)
-      _op, acc -> acc
+      %Op.AddSheet{title: title}, acc ->
+        Map.put(acc, title, Map.get(ids, title) || Map.fetch!(claimed, title))
+
+      %Op.DeleteSheet{title: title}, acc ->
+        Map.delete(acc, title)
+
+      _op, acc ->
+        acc
     end)
   end
 

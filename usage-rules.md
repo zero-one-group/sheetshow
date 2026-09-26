@@ -122,8 +122,10 @@ and the answer is `{:error, %Sheetshow.Error{reason: :unsupported}}` rather than
 
 - **Google**: everything but `:conditional_write`.
 - **An `.xlsx` file**: nothing is worked out, so a formula reads back as itself and
-  `Sheetshow.Log.view/2` cannot keep a view current; there is no `:server_side_append`, since
-  the whole file is written; a WebDAV store gives `:conditional_write`, a local file does not.
+  `Sheetshow.Log.view/2` cannot keep a view current; `read_rows/2` gives the result the file
+  last cached, and a tab Sheetshow has written has none until a spreadsheet saves the file;
+  there is no `:server_side_append`, since the whole file is written; a WebDAV store gives
+  `:conditional_write`, a local file does not.
 - **Memory**: the test double. Same code, no network; it works out no formulas either.
 
 ## The Quota

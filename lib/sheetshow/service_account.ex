@@ -145,10 +145,19 @@ defmodule Sheetshow.ServiceAccount do
     end
   end
 
+  # An RSA private key, and nothing else: a public key decodes too, and so does
+  # an EC key, and neither signs the RS256 assertion Google wants, so a credential
+  # holding one would parse here and fail later, at `connect/1`, with a raise.
   defp decode_key(private_key) do
     case :public_key.pem_decode(private_key) do
-      [entry] -> {:ok, :public_key.pem_entry_decode(entry)}
-      _ -> :error
+      [entry] ->
+        case :public_key.pem_entry_decode(entry) do
+          key when is_tuple(key) and elem(key, 0) == :RSAPrivateKey -> {:ok, key}
+          _other -> :error
+        end
+
+      _ ->
+        :error
     end
   rescue
     _ -> :error

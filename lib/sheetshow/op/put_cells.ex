@@ -22,8 +22,9 @@ defmodule Sheetshow.Op.PutCells do
 
   @doc """
   Builds the op from cells, sorted left to right. The sheet comes from the
-  cells unless given; `ArgumentError` if they disagree, sit on different rows
-  or leave a gap.
+  cells unless given, and a given sheet wins over theirs, which is how a run
+  read from one tab is written to another. `ArgumentError` if the cells name
+  different sheets and none is given, sit on different rows or leave a gap.
 
       iex> Sheetshow.Op.PutCells.new(Sheetshow.row([1, 2]), "Costs").sheet
       "Costs"

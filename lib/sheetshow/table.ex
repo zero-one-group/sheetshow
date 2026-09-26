@@ -299,9 +299,14 @@ defmodule Sheetshow.Table do
       ids
       |> Enum.with_index(1)
       |> Enum.reduce(%{}, fn {cells, number}, acc ->
-        case List.first(cells) do
-          blank when blank in [nil, ""] -> acc
-          id -> Map.update(acc, to_string(id), [number], &(&1 ++ [number]))
+        case cells |> List.first() |> Records.text() do
+          nil ->
+            acc
+
+          id ->
+            if String.trim(id) == "",
+              do: acc,
+              else: Map.update(acc, id, [number], &(&1 ++ [number]))
         end
       end)
 
@@ -376,7 +381,7 @@ defmodule Sheetshow.Table do
 
   @doc """
   A row to add, with an id of its own unless you pass one. Takes `:id`, any
-  non-empty string, exactly as a log's events do.
+  string with something in it besides spaces, exactly as a log's events do.
 
   An insert is the one change that does not depend on where anything sits:
   `appendCells` resolves below the last row with data when Google applies it,
@@ -409,9 +414,10 @@ defmodule Sheetshow.Table do
   end
 
   @doc """
-  Takes a row out. By default that means setting its `deleted` flag: one cell,
-  nothing below it moves, and a plan aimed at a row that has since shifted
-  leaves a flag in the wrong place rather than destroying a record.
+  Takes a row out. By default that means setting its `deleted` flag, with the
+  row's id written back beside it as an update writes it, and nothing below it
+  moves. A plan aimed at a row that has since shifted marks the wrong row, which
+  the next read shows as one id on two rows, rather than destroying a record.
 
   `hard: true` plans a real `Sheetshow.Op.DeleteRows` instead. That is the
   destructive one, since it takes the whole row, a person's own columns
@@ -703,10 +709,14 @@ defmodule Sheetshow.Table do
   end
 
   defp id(nil), do: ULID.generate()
-  defp id(given) when is_binary(given) and given != "", do: given
 
-  defp id(other) do
-    raise ArgumentError, "a row's id is a non-empty string, got #{inspect(other)}"
+  defp id(given) do
+    if Records.id?(given) do
+      given
+    else
+      raise ArgumentError,
+            "a row's id is a UTF-8 string with something in it besides spaces, got #{inspect(given)}"
+    end
   end
 
   # An id is a table's way of finding a row again, so two rows wearing one is a

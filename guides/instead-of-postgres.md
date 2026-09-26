@@ -281,9 +281,10 @@ Sheetshow.Table.restore("food")               # undoes a soft delete
 Sheetshow.Table.compact(snapshot)             # the plan that hard-deletes every tombstone
 ```
 
-Soft is the default, and not out of timidity: a soft delete is one cell and
-moves nothing, so a plan aimed at a row that has since shifted leaves a flag in
-the wrong place instead of destroying a record. `Sheetshow.Table.live/1` hides
+Soft is the default, and not out of timidity: a soft delete writes the flag and
+the row's id and moves nothing, so a plan aimed at a row that has since shifted
+marks the wrong row, which the next read shows as one id on two rows, instead of
+destroying a record. `Sheetshow.Table.live/1` hides
 tombstones; `snapshot.rows` shows them, for the people who want to know who did
 it, and Sheets' own version history shows *which* person, which is more than
 `DELETE` ever told anyone.

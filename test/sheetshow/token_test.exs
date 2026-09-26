@@ -91,4 +91,25 @@ defmodule Sheetshow.TokenTest do
     assert shown =~ "one"
     refute shown =~ "ya29.secret"
   end
+
+  describe "the 0.1.6 review" do
+    test "an error the endpoint spells as an object is a refusal, not a crash" do
+      assert {:error, %Error{reason: :auth} = error} =
+               Token.from_response(%{"error" => %{"code" => 503, "message" => "unavailable"}})
+
+      assert Exception.message(error) =~ "unavailable"
+      assert {:error, %Error{reason: :auth}} = Token.from_response(%{"error" => 7})
+    end
+
+    test "an answer it cannot use keeps its tokens out of the error" do
+      answer = %{"access_token" => "ya29.SECRET", "refresh_token" => "1//ROTATED", "scope" => "s"}
+
+      assert {:error, %Error{reason: :invalid_token_response} = error} =
+               Token.from_response(answer)
+
+      refute inspect(error) =~ "SECRET"
+      refute inspect(error) =~ "ROTATED"
+      assert error.details.response == %{"scope" => "s"}
+    end
+  end
 end

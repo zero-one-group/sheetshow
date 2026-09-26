@@ -60,20 +60,28 @@ defmodule Sheetshow.Memory.Backend do
 
   # What the values endpoint gives back, after `Sheetshow.Google.decode_values/1`
   # has padded it: rows from the range's own first row down to the last row
-  # holding anything, each as wide as the widest, with an empty cell as nil.
-  # Rows below the last one with something in it are not there, which is what
-  # Google does too.
-  defp rows([], _range), do: []
-
+  # holding a value, each as wide as the widest, with an empty cell as nil. Rows
+  # below the last one with a value in it are not there, which is what Google
+  # does too, and a cell with a style and nothing in it is no value: a border on
+  # an empty row made a values read of a template end in a tail of empty rows.
   defp rows(cells, %Range{start_row: first_row, start_col: first_col}) do
     values =
-      Map.new(cells, fn %Cell{coord: coord} = cell -> {{coord.row, coord.col}, value_of(cell)} end)
+      cells
+      |> Enum.map(fn %Cell{coord: coord} = cell -> {{coord.row, coord.col}, value_of(cell)} end)
+      |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+      |> Map.new()
 
-    last_row = cells |> Enum.map(& &1.coord.row) |> Enum.max()
-    last_col = cells |> Enum.map(& &1.coord.col) |> Enum.max()
+    case Map.keys(values) do
+      [] ->
+        []
 
-    for row <- first_row..last_row//1 do
-      for col <- first_col..last_col//1, do: Map.get(values, {row, col})
+      keys ->
+        last_row = keys |> Enum.map(&elem(&1, 0)) |> Enum.max()
+        last_col = keys |> Enum.map(&elem(&1, 1)) |> Enum.max()
+
+        for row <- first_row..last_row//1 do
+          for col <- first_col..last_col//1, do: Map.get(values, {row, col})
+        end
     end
   end
 
