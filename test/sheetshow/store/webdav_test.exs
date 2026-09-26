@@ -126,10 +126,17 @@ defmodule Sheetshow.Store.WebDAVTest do
       assert Exception.message(error) =~ "has changed since it was to be created"
     end
 
-    test "a server that answers 409 to the same thing means the same thing" do
-      store = store([{409, "", "text/plain", []}])
+    # A 409 to a PUT is WebDAV's answer to a folder that is not there (RFC 4918,
+    # 9.7.1), which Nextcloud gives as "Files cannot be created in non-existent
+    # collections". Read as a conflict, the retry it asks for could never work.
+    test "a 409 is a missing folder, not a conflict to retry" do
+      body = "Files cannot be created in non-existent collections"
+      store = store([{409, body, "text/plain", []}])
 
-      assert {:error, %Error{reason: :conflict}} = Store.write(store, "bytes", :absent)
+      assert {:error, %Error{reason: :http} = error} = Store.write(store, "bytes", :absent)
+      assert error.details.status == 409
+      assert error.details.body == body
+      assert Exception.message(error) =~ "the folder the file would go in is not there"
     end
 
     test "a lock, a refusal and a full disk each say which they are" do
@@ -355,6 +362,34 @@ defmodule Sheetshow.Store.WebDAVTest do
 
       refute printed =~ "hunter2"
       assert printed =~ "https://example.com/x.xlsx"
+    end
+  end
+
+  describe "the 0.1.6 review" do
+    test "headers of your own go beside the credentials" do
+      store =
+        store([{200, "bytes", "application/octet-stream", [{"etag", ~s("v1")}]}],
+          headers: [{"x-trace", "1"}, {"authorization", "Bearer other"}]
+        )
+
+      assert {:ok, {"bytes", ~s("v1")}} = Store.read(store)
+      assert_receive {:request, request}
+      assert request.headers["x-trace"] == "1"
+      assert request.headers["authorization"] =~ "Basic "
+    end
+
+    test "an unknown option is refused without printing the password" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Store.webdav("https://cloud.example.com/x.xlsx",
+            username: "u",
+            password: "s3cret-app-pw",
+            timeout: 5_000
+          )
+        end
+
+      refute Exception.message(error) =~ "s3cret"
+      assert Exception.message(error) =~ ":timeout"
     end
   end
 end

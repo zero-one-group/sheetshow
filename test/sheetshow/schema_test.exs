@@ -274,4 +274,69 @@ defmodule Sheetshow.SchemaTest do
       assert Schema.cast_boolean(2) == :error
     end
   end
+
+  describe "the 0.1.6 review" do
+    test "a number typed into a decimal or text column reads as it was typed" do
+      assert {%{cost: "19.99", note: "1000.1"}, %{}} =
+               Schema.cast([19.99, 1000.1], cost: :decimal, note: :string)
+
+      for {number, printed} <- [
+            {123.456, "123.456"},
+            {1000.0, "1000.0"},
+            {1.0e-5, "0.00001"},
+            {1.0e20, "100000000000000000000.0"},
+            {1.0e21, "1.0e21"},
+            {1.0e-20, "1.0e-20"},
+            {-0.5, "-0.5"}
+          ] do
+        assert {%{v: ^printed}, %{}} = Schema.cast([number], v: :decimal)
+      end
+    end
+
+    test "a number too large to be a date is a cast error, and quickly" do
+      task = Task.async(fn -> Schema.cast([1.0e16], on: :date) end)
+      assert {%{on: nil}, %{on: %Error{reason: :cast}}} = Task.await(task, 2_000)
+    end
+
+    test "an integer no double can hold is the wrong type for a float column, both ways" do
+      assert {:error, %Error{reason: :invalid_record}} = Schema.encode(%{v: 10 ** 400}, v: :float)
+      assert {%{v: nil}, %{v: %Error{reason: :cast}}} = Schema.cast([10 ** 400], v: :float)
+    end
+
+    test "a decimal is decimal syntax, whether or not a double can hold it" do
+      assert {:ok, ["1E+400"]} = Schema.encode(%{v: "1E+400"}, v: :decimal)
+      assert {:ok, [".5"]} = Schema.encode(%{v: ".5"}, v: :decimal)
+      assert {:error, %Error{}} = Schema.encode(%{v: "1e"}, v: :decimal)
+      assert {:error, %Error{}} = Schema.encode(%{v: "NaN"}, v: :decimal)
+    end
+
+    test "text that is not UTF-8 is not text" do
+      assert {:error, %Error{reason: :invalid_record}} =
+               Schema.encode(%{v: <<"Caf", 233>>}, v: :string)
+    end
+
+    test "a moment of another kind casts as its serial number would, as Google hands it over" do
+      schema = [on: :date, at: :datetime, time: :time, days: :float, n: :integer]
+
+      assert {record, %{}} =
+               Schema.cast(
+                 [
+                   ~N[2026-01-05 10:30:00],
+                   ~D[2026-01-05],
+                   ~N[2026-01-05 10:30:00],
+                   ~D[2026-01-05],
+                   ~D[2026-01-05]
+                 ],
+                 schema
+               )
+
+      assert record == %{
+               on: ~D[2026-01-05],
+               at: ~N[2026-01-05 00:00:00],
+               time: ~T[10:30:00],
+               days: 46_027.0,
+               n: 46_027
+             }
+    end
+  end
 end

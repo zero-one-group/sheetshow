@@ -25,11 +25,16 @@ defmodule Sheetshow.Store.Local do
 
   alias Sheetshow.{Error, Store}
 
+  # The version is taken before the bytes. A file replaced in between then
+  # reads as its new bytes under its old version, which the next write's check
+  # refuses; the other order gave old bytes a new version, which it let through.
   @impl true
   def read(%Store{location: path}) do
+    version = version(path)
+
     case File.read(path) do
       {:ok, bytes} ->
-        {:ok, {bytes, version(path)}}
+        {:ok, {bytes, version}}
 
       {:error, :enoent} ->
         {:error, Error.new(:not_found, "there is nothing at #{path}", path: path)}
@@ -43,12 +48,41 @@ defmodule Sheetshow.Store.Local do
     end
   end
 
+  # Through a symbolic link, not over it: a rename onto a link replaces the link
+  # with a file, and the file it pointed at (in a synced folder, say) kept the
+  # old bytes while every read through the link looked right.
   @impl true
   def write(%Store{location: path} = store, bytes, precondition) do
+    target = target(path)
+
     with :ok <- check(store, precondition),
-         :ok <- mkdir(path),
-         {:ok, temporary} <- write_temporary(path, bytes) do
-      finish(store, path, temporary, precondition)
+         :ok <- mkdir(target),
+         {:ok, temporary} <- write_temporary(target, bytes) do
+      finish(store, target, temporary, precondition)
+    end
+  end
+
+  # The file a path names once every link along the way is followed, as far as
+  # links go; a link to nothing yet is the file it would be. A relative link is
+  # joined to the directory the link is in and left for the kernel to resolve,
+  # not tidied up here: `..` means the parent of the directory the link really
+  # sits in, which is not the parent of the path it was reached by when that path
+  # itself passes through a link.
+  defp target(path, hops \\ 0)
+  defp target(path, 40), do: path
+
+  defp target(path, hops) do
+    case :file.read_link_all(path) do
+      {:ok, link} ->
+        link = IO.chardata_to_string(link)
+
+        case Path.type(link) do
+          :absolute -> target(link, hops + 1)
+          _relative -> target(Path.join(Path.dirname(path), link), hops + 1)
+        end
+
+      {:error, _not_a_link} ->
+        path
     end
   end
 

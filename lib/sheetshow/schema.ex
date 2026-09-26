@@ -144,10 +144,12 @@ defmodule Sheetshow.Schema do
     end)
   end
 
+  # Text has to be UTF-8 to be text at all: a Latin-1 byte written into a file
+  # makes the whole workbook unreadable, and Google refuses the request.
   defp encode_one(nil, _type), do: {:ok, nil}
-  defp encode_one(value, :string) when is_binary(value), do: {:ok, value}
+  defp encode_one(value, :string) when is_binary(value), do: utf8(value)
   defp encode_one(value, :integer) when is_integer(value), do: {:ok, value}
-  defp encode_one(value, :float) when is_number(value), do: {:ok, value * 1.0}
+  defp encode_one(value, :float) when is_number(value), do: to_float(value)
   defp encode_one(value, :boolean) when is_boolean(value), do: {:ok, value}
   defp encode_one(%Date{} = value, :date), do: {:ok, value}
   defp encode_one(%NaiveDateTime{} = value, :datetime), do: {:ok, value}
@@ -159,12 +161,22 @@ defmodule Sheetshow.Schema do
   end
 
   defp encode_one(value, :json) do
-    {:ok, JSON.encode!(value)}
+    with {:ok, text} <- {:ok, JSON.encode!(value)}, do: utf8(text)
   rescue
     _ -> :error
   end
 
   defp encode_one(_value, _type), do: :error
+
+  defp utf8(text), do: if(String.valid?(text), do: {:ok, text}, else: :error)
+
+  # An integer too large for a double has no float to become, which is a value
+  # of the wrong type rather than a crash.
+  defp to_float(value) do
+    {:ok, value * 1.0}
+  rescue
+    ArithmeticError -> :error
+  end
 
   @doc """
   The values of one row, in schema order, as a record, with an error beside
@@ -245,7 +257,7 @@ defmodule Sheetshow.Schema do
 
   defp cast_value(value, :integer) when is_binary(value), do: parse(value, &Integer.parse/1)
 
-  defp cast_value(value, :float) when is_number(value), do: {:ok, value * 1.0}
+  defp cast_value(value, :float) when is_number(value), do: to_float(value)
   defp cast_value(value, :float) when is_binary(value), do: parse(value, &Float.parse/1)
 
   defp cast_value(value, :boolean), do: cast_boolean(value)
@@ -253,10 +265,11 @@ defmodule Sheetshow.Schema do
   defp cast_value(value, kind) when kind in [:date, :datetime, :time] and is_number(value) do
     {:ok, Value.from_serial(value, kind)}
   rescue
-    # A serial so large the conversion overflows is not a moment anyone meant.
-    # Lenient casting turns that into a nil field and a :cast error, the same as
-    # any other value that will not read, rather than raising out of a read.
-    ArithmeticError -> :error
+    # A serial outside the years a date can hold is not a moment anyone meant:
+    # a nil field and a :cast error, the same as any other value that will not
+    # read, rather than raising out of a read (or, as it once did, never
+    # returning from one).
+    ArgumentError -> :error
   end
 
   # A backend that keeps values rather than serial numbers (`Sheetshow.Memory`,
@@ -267,6 +280,16 @@ defmodule Sheetshow.Schema do
   defp cast_value(%NaiveDateTime{} = value, :datetime), do: {:ok, value}
   defp cast_value(%DateTime{} = value, :datetime), do: {:ok, DateTime.to_naive(value)}
   defp cast_value(%Time{} = value, :time), do: {:ok, value}
+
+  # A moment of another kind than the column's: a `.xlsx` file reads a number as
+  # whatever its format shows, so a timestamp somebody formatted as a date is a
+  # `NaiveDateTime` in a `:date` column. Google hands the same cell back as its
+  # serial number, and the column makes what it makes of that; so does this, by
+  # way of the serial, so the backends agree on every such cell, the number and
+  # text columns included.
+  defp cast_value(%struct{} = value, type)
+       when struct in [Date, NaiveDateTime, DateTime, Time],
+       do: cast_value(Value.to_serial(value), type)
 
   defp cast_value(value, :date) when is_binary(value), do: parsed(Date.from_iso8601(value))
 
@@ -310,33 +333,49 @@ defmodule Sheetshow.Schema do
   defp upcase(true), do: "TRUE"
   defp upcase(false), do: "FALSE"
 
-  # A number as the sheet showed it, never in exponent form: `Kernel.to_string/1` turns
-  # 1000.0 into "1.0e3", which is not what anyone typed into a decimal column.
+  # A number as the sheet showed it: the fewest digits that read back as the
+  # same double, which is what a person typed (19.99, not the 19.989999999999998
+  # a fixed count of decimals prints), and in plain decimal form rather than the
+  # exponent `Kernel.to_string/1` gives 1000.0 ("1.0e3"). A magnitude too far
+  # from 1 to print plainly in a reasonable width (below 1.0e-7 or from 1.0e21, the
+  # bounds JavaScript prints numbers by) keeps its exponent, since a wrong number
+  # and a thousand zeros are both worse than one.
   defp printed(value) when is_integer(value), do: Integer.to_string(value)
 
   defp printed(value) when is_float(value) do
-    # Plain decimals keep a decimal column out of exponent form, which is not what
-    # anyone typed there, so they are the form to use wherever they round-trip. But
-    # 15 decimals cannot see every value: below about 1.0e-15 they round a nonzero
-    # number to "0", and a large magnitude overflows the fixed format and raises.
-    # Either way the shortest round-tripping form is written instead, in exponent
-    # notation if that is what it takes, since a wrong number and a raised cast are
-    # both worse than an exponent.
-    with {:ok, fixed} <- fixed_decimals(value),
-         true <- round_trips?(fixed, value) do
-      fixed
-    else
-      _ -> :erlang.float_to_binary(value, [:short])
+    short = :erlang.float_to_binary(value, [:short])
+
+    case Regex.run(~r/\A(-?)(\d+)\.(\d+)e(-?\d+)\z/, short) do
+      [_, sign, whole, fraction, exponent] ->
+        plain(sign, whole, fraction, String.to_integer(exponent)) || short
+
+      nil ->
+        short
     end
   end
 
-  defp fixed_decimals(value) do
-    {:ok, :erlang.float_to_binary(value, [:compact, decimals: 15])}
-  rescue
-    ArgumentError -> :error
+  # `d.ddd` times ten to `exponent`, as plain digits with the point moved.
+  defp plain(sign, whole, fraction, exponent) when exponent >= -7 and exponent < 21 do
+    digits = String.trim_trailing(whole <> fraction, "0")
+    digits = if digits == "", do: "0", else: digits
+    point = String.length(whole) + exponent
+
+    {integer, decimals} =
+      cond do
+        point <= 0 ->
+          {"0", String.duplicate("0", -point) <> digits}
+
+        point >= String.length(digits) ->
+          {digits <> String.duplicate("0", point - String.length(digits)), "0"}
+
+        true ->
+          String.split_at(digits, point)
+      end
+
+    sign <> integer <> "." <> decimals
   end
 
-  defp round_trips?(printed, value), do: match?({^value, ""}, Float.parse(printed))
+  defp plain(_sign, _whole, _fraction, _exponent), do: nil
 
   defp parse(string, parser) do
     case parser.(String.trim(string)) do
@@ -348,11 +387,10 @@ defmodule Sheetshow.Schema do
   defp parsed({:ok, value}), do: {:ok, value}
   defp parsed(_other), do: :error
 
+  # Decimal syntax, read as syntax: `Float.parse/1` refuses a number a double
+  # cannot hold (`1E+400`), which is exactly what a decimal column is for.
   defp numeric?(string) do
-    case Float.parse(String.trim(string)) do
-      {_number, ""} -> true
-      _other -> false
-    end
+    Regex.match?(~r/\A[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?\z/, String.trim(string))
   end
 
   defp invalid(message), do: Error.new(:invalid_schema, message)
@@ -370,6 +408,18 @@ defmodule Sheetshow.Schema do
     Error.new(
       :invalid_record,
       "#{inspect(name)} is #{inspect(type)}, so #{inspect(value)} cannot be written there",
+      column: name,
+      type: type,
+      value: value
+    )
+  end
+
+  defp cast_error(name, type, {:formula, _} = value) do
+    Error.new(
+      :cast,
+      "#{inspect(value)} does not read as #{inspect(type)}: it is a formula nothing has worked " <>
+        "out yet, which is what a backend that evaluates no formulas holds until a spreadsheet " <>
+        "opens the file and saves it",
       column: name,
       type: type,
       value: value

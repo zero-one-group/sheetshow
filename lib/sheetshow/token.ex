@@ -62,6 +62,11 @@ defmodule Sheetshow.Token do
       iex> {:error, %Sheetshow.Error{reason: :auth}} =
       ...>   Sheetshow.Token.from_response(%{"error" => "invalid_grant"})
   """
+  # What an answer carries that must not end up in an error, which is printed,
+  # logged and shown in crash reports: an answer with a token in it but no
+  # `expires_in` is still an answer with a token in it.
+  @secrets ["access_token", "refresh_token", "id_token"]
+
   @spec from_response(map(), keyword()) :: {:ok, t()} | {:error, Error.t()}
   def from_response(response, opts \\ []) when is_map(response) do
     opts = Keyword.validate!(opts, [:now, :scopes])
@@ -92,7 +97,7 @@ defmodule Sheetshow.Token do
          Error.new(
            :invalid_token_response,
            "expected access_token and expires_in, got keys #{inspect(Map.keys(response))}",
-           response: response
+           response: Map.drop(response, @secrets)
          )}
     end
   end
@@ -152,10 +157,21 @@ defmodule Sheetshow.Token do
     end
   end
 
+  # An OAuth endpoint names its error in a string; an API that is having a bad
+  # day answers the same key with an object (`{"code": 503, "message": ...}`),
+  # which has a message but is not a string, and describing it must not be the
+  # thing that fails.
   defp describe(response, error) do
+    name =
+      case error do
+        text when is_binary(text) -> text
+        %{"message" => message} when is_binary(message) -> message
+        other -> inspect(other)
+      end
+
     case Map.get(response, "error_description") do
-      nil -> to_string(error)
-      description -> "#{error} (#{description})"
+      description when is_binary(description) -> "#{name} (#{description})"
+      _none -> name
     end
   end
 end

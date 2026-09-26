@@ -148,14 +148,35 @@ defmodule Sheetshow.Records do
   # can be and a column key cannot.
   defp canonical(name), do: name |> to_string() |> String.trim() |> String.downcase()
 
-  defp normalise(nil), do: nil
-
   defp normalise(name) do
-    case canonical(name) do
-      "" -> nil
-      key -> key
+    case text(name) do
+      nil -> nil
+      text -> if (key = canonical(text)) == "", do: nil, else: key
     end
   end
+
+  @doc """
+  A cell's value as the text an id or a header name is, or nil when it is no
+  such thing: a formula nothing has worked out (`Sheetshow.Memory` hands one
+  back as the formula, and so does an `.xlsx` file after a write), or anything
+  else that is not a plain value. Such a cell is no id and no column name, which
+  is a flag on the row or a column not found, never a crash in the read.
+  """
+  def text(value) when is_binary(value), do: value
+  def text(value) when is_number(value) or is_boolean(value), do: to_string(value)
+  def text(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
+
+  def text(%struct{} = value) when struct in [Date, NaiveDateTime, DateTime, Time],
+    do: to_string(value)
+
+  def text(_value), do: nil
+
+  @doc """
+  Whether a value can be a row's id: a string, valid UTF-8, with something in
+  it besides spaces. A blank id reads back as no id at all, so it is refused
+  where it would be written rather than lost on the way back.
+  """
+  def id?(id), do: is_binary(id) and String.valid?(id) and String.trim(id) != ""
 
   defp missing_column(name, sheet, header) do
     Error.new(
@@ -203,11 +224,18 @@ defmodule Sheetshow.Records do
 
   defp at(row, position), do: Enum.at(row, position)
 
-  defp id(value, errors) when value in [nil, ""] do
-    {nil, Map.put(errors, :id, Error.new(:cast, "the row has no id", column: :id, value: value))}
+  # An id is text with something in it. A cell of spaces is no id, as it is no
+  # value in any other column, and nor is a formula nothing has worked out.
+  defp id(value, errors) do
+    case text(value) do
+      nil -> {nil, no_id(errors, value)}
+      id -> if String.trim(id) == "", do: {nil, no_id(errors, value)}, else: {id, errors}
+    end
   end
 
-  defp id(value, errors), do: {to_string(value), errors}
+  defp no_id(errors, value) do
+    Map.put(errors, :id, Error.new(:cast, "the row has no id", column: :id, value: value))
+  end
 
   # A flag nobody can read should not quietly hide a row, so it reads as live
   # and says so.

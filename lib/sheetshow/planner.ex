@@ -12,7 +12,7 @@ defmodule Sheetshow.Planner do
     opts = Keyword.validate!(opts, @options)
 
     with :ok <- validate(cells),
-         {:ok, cells} <- on_sheets(cells, Keyword.get(opts, :sheet)) do
+         {:ok, cells} <- on_sheets(Enum.reject(cells, &padding?/1), Keyword.get(opts, :sheet)) do
       titles = cells |> Enum.map(& &1.coord.sheet) |> Enum.uniq()
       order = titles |> Enum.with_index() |> Map.new()
       cells = last_wins(cells)
@@ -22,6 +22,12 @@ defmodule Sheetshow.Planner do
          put_cells(cells, order) ++ set_dimensions(cells, order)}
     end
   end
+
+  # What `Sheetshow.pad_below/2` and `pad_right/2` leave to hold room. It holds
+  # room in a layout and nothing on a sheet: written, an empty cell clears, and
+  # this one would clear a cell outside the block that asked for the room.
+  defp padding?(%Cell{value: nil, meta: %{pad: true}} = cell), do: map_size(cell.style) == 0
+  defp padding?(_cell), do: false
 
   defp validate(cells) do
     Enum.find_value(cells, :ok, fn cell ->

@@ -38,7 +38,14 @@ defmodule Sheetshow.HTTP do
           {charlist_url, charlist_headers, to_charlist(content_type), body || ""}
       end
 
-    case :httpc.request(method, request, http_options(url, opts), body_format: :binary) do
+    # No redirects followed. `:httpc` would follow one to any host, with every
+    # header, the `Authorization` among them, and re-send a POST's body; neither
+    # Google's API nor a WebDAV server has a reason to redirect a request of
+    # ours, so one is answered as the status it is.
+    options = [body_format: :binary]
+    http = [{:autoredirect, false} | http_options(url, opts)]
+
+    case :httpc.request(method, request, http, options) do
       {:ok, {{_version, status, _reason}, response_headers, response_body}} ->
         {:ok, %{status: status, headers: strings(response_headers), body: response_body}}
 

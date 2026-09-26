@@ -92,9 +92,22 @@ defmodule Sheetshow.Store do
   """
   @spec webdav(String.t(), keyword()) :: t()
   def webdav(url, options \\ []) when is_binary(url) do
-    options = Keyword.validate!(options, [:username, :password, :headers, :http])
-    Keyword.validate!(Keyword.get(options, :http, []), Sheetshow.HTTP.options())
+    options = validate!(options, [:username, :password, :headers, :http])
+    validate!(Keyword.get(options, :http, []), Sheetshow.HTTP.options())
     %__MODULE__{module: Sheetshow.Store.WebDAV, location: url, options: options}
+  end
+
+  # `Keyword.validate!/2`, without its message: that prints the whole list, and
+  # the list here holds a password.
+  defp validate!(options, keys) do
+    case Keyword.validate(options, keys) do
+      {:ok, options} ->
+        options
+
+      {:error, unknown} ->
+        raise ArgumentError,
+              "unknown keys #{inspect(unknown)} in the options, the known ones being #{inspect(keys)}"
+    end
   end
 
   @doc """

@@ -96,4 +96,51 @@ defmodule Sheetshow.ValueTest do
     for value <- [nil, 1, "x", true, {:formula, "=1"}],
         do: assert(Value.default_number_format(value) == nil)
   end
+
+  describe "the 0.1.6 review" do
+    test "text must be UTF-8 to be a value" do
+      refute Value.valid?(<<"Caf", 233>>)
+      refute Value.valid?({:formula, <<"=\"", 233, "\"">>})
+
+      assert {:error, %Sheetshow.Error{reason: :invalid_value} = error} =
+               Value.validate(<<"Caf", 233>>)
+
+      assert Exception.message(error) =~ "UTF-8"
+      assert Value.valid?("Café")
+    end
+
+    test "a serial outside the years a date holds raises at once, rather than never returning" do
+      task =
+        Task.async(fn ->
+          try do
+            Value.from_serial(1.0e16, :date)
+          rescue
+            error -> error
+          end
+        end)
+
+      assert %ArgumentError{} = Task.await(task, 2_000)
+
+      for serial <- [1.0e308, -1.0e7, 2_958_466] do
+        assert_raise ArgumentError, fn -> Value.from_serial(serial, :datetime) end
+      end
+
+      assert Value.from_serial(2_958_465.5, :datetime) == ~N[9999-12-31 12:00:00]
+      assert_raise ArgumentError, fn -> Value.from_serial(2_958_465.999999995, :date) end
+      assert Value.read_serial(2_958_465.999999995, :datetime) == 2_958_465.999999995
+      assert Value.from_serial(-693_593, :date) == ~D[0001-01-01]
+    end
+
+    test "a time a hair before midnight stays on its own day" do
+      assert Value.from_serial(0.9999999999, :time) == ~T[23:59:59.999]
+    end
+
+    test "a format that shows only part of a moment does not lose the rest" do
+      assert Value.read_serial(45_292, :date) == ~D[2024-01-01]
+      assert Value.read_serial(45_292.75, :date) == ~N[2024-01-01 18:00:00]
+      assert Value.read_serial(0.75, :time) == ~T[18:00:00]
+      assert Value.read_serial(45_292.75, :time) == ~N[2024-01-01 18:00:00]
+      assert Value.read_serial(1.0e20, :date) == 1.0e20
+    end
+  end
 end

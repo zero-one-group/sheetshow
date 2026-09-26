@@ -33,9 +33,9 @@ defmodule Sheetshow.Log.Event do
   @doc """
   An event holding a record, with an id of its own unless you pass one.
 
-  Options: `:id`, any non-empty string, since a ULID is only the default, so an
-  invoice number or a key your app already has is just as good; and `:deleted`,
-  to make a tombstone in one step.
+  Options: `:id`, any string with something in it besides spaces, since a ULID
+  is only the default, so an invoice number or a key your app already has is
+  just as good; and `:deleted`, to make a tombstone in one step.
 
       iex> Sheetshow.Log.Event.new(%{item: "Rent"}, id: "invoice-104").id
       "invoice-104"
@@ -52,10 +52,17 @@ defmodule Sheetshow.Log.Event do
   end
 
   defp id(nil), do: ULID.generate()
-  defp id(given) when is_binary(given) and given != "", do: given
 
-  defp id(other) do
-    raise ArgumentError, "an event's id is a non-empty string, got #{inspect(other)}"
+  # A blank id reads back as no id at all, so it is refused here rather than
+  # written and lost.
+  defp id(given) do
+    if Sheetshow.Records.id?(given) do
+      given
+    else
+      raise ArgumentError,
+            "an event's id is a UTF-8 string with something in it besides spaces, " <>
+              "got #{inspect(given)}"
+    end
   end
 
   @doc """

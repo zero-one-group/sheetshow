@@ -153,9 +153,17 @@ defmodule Sheetshow.Xlsx.Backend do
 
     with {:ok, sheets, memory} <- ensure(package, sheets, memory, title),
          {:ok, memory} <- Memory.run([op], memory) do
-      {:ok, {package, sheets, memory, MapSet.put(touched, title)}}
+      {:ok, {package, move_rows(sheets, op), memory, MapSet.put(touched, title)}}
     end
   end
+
+  # What a row said about itself (a hidden flag, an outline level) moves with the
+  # row when rows above it go, the way its cells and its height do in `Memory`.
+  defp move_rows(sheets, %Op.DeleteRows{sheet: title, rows: first.._last//1} = op) do
+    Map.update!(sheets, title, &Sheet.delete_rows(&1, first, Op.DeleteRows.count(op)))
+  end
+
+  defp move_rows(sheets, _op), do: sheets
 
   # A sheet becomes cells the first time an op names it, and not before.
   defp ensure(package, sheets, memory, title) do

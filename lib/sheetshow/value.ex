@@ -40,6 +40,10 @@ defmodule Sheetshow.Value do
 
   @epoch ~D[1899-12-30]
   @ms_per_day 86_400_000
+  # The serial numbers of 0001-01-01 and of 10000-01-01: every moment a `Date`
+  # can hold lies in between.
+  @first_serial -693_593
+  @last_serial 2_958_466
 
   @doc """
   The kind of a valid value. Raises `ArgumentError` for anything else; use
@@ -81,6 +85,12 @@ defmodule Sheetshow.Value do
     else
       why =
         case value do
+          text when is_binary(text) ->
+            "text must be valid UTF-8"
+
+          {:formula, "=" <> _} ->
+            "a formula must be valid UTF-8"
+
           {:formula, _} ->
             "a formula must start with \"=\""
 
@@ -93,11 +103,16 @@ defmodule Sheetshow.Value do
     end
   end
 
-  @doc "Whether the term is a cell value."
+  @doc """
+  Whether the term is a cell value. Text must be UTF-8: a Latin-1 byte from an
+  old CSV is not a character any backend can hold, and one written into an
+  `.xlsx` file makes the whole workbook unreadable.
+  """
   @spec valid?(term()) :: boolean()
   def valid?(nil), do: true
-  def valid?(v) when is_number(v) or is_binary(v) or is_boolean(v), do: true
-  def valid?({:formula, "=" <> _}), do: true
+  def valid?(v) when is_number(v) or is_boolean(v), do: true
+  def valid?(v) when is_binary(v), do: String.valid?(v)
+  def valid?({:formula, "=" <> _ = formula}), do: String.valid?(formula)
   def valid?(%struct{}) when struct in [Date, NaiveDateTime, DateTime, Time], do: true
   def valid?(_), do: false
 
@@ -129,6 +144,10 @@ defmodule Sheetshow.Value do
   millisecond. Sub-second parts keep millisecond precision; whole seconds come
   back with none, so a second-precision value round-trips as `==`.
 
+  Raises `ArgumentError` for a serial outside the years 1 to 9999, which no
+  `Date` holds: a sixteen-digit order number pasted into a date column is not a
+  moment anyone meant.
+
       iex> Sheetshow.Value.from_serial(25569, :date)
       ~D[1970-01-01]
       iex> Sheetshow.Value.from_serial(45292.5, :datetime)
@@ -138,16 +157,59 @@ defmodule Sheetshow.Value do
   """
   @spec from_serial(number(), :date | :datetime | :time) ::
           Date.t() | NaiveDateTime.t() | Time.t()
-  def from_serial(serial, kind) when is_number(serial) do
+  def from_serial(serial, kind) when is_number(serial) and kind in [:date, :datetime, :time] do
+    # Checked before any arithmetic: `Date.add/2` takes time in proportion to the
+    # days it adds, so a serial of 1.0e16 did not raise, it simply never returned.
+    # And again once rounded to the millisecond, which can carry the last moment
+    # of 9999 into the year 10000.
+    unless serial >= @first_serial and serial < @last_serial do
+      raise ArgumentError,
+            "#{inspect(serial)} is outside the serial numbers of the years 1 to 9999"
+    end
+
     total_ms = round(serial * @ms_per_day)
     days = Integer.floor_div(total_ms, @ms_per_day)
     ms = Integer.mod(total_ms, @ms_per_day)
 
+    if days >= @last_serial and kind != :time do
+      raise ArgumentError,
+            "#{inspect(serial)} rounds to the year 10000, past the last a date can hold"
+    end
+
     case kind do
       :date -> Date.add(@epoch, days)
-      :time -> time_from_ms(ms)
+      # A time a hair before midnight rounds up to the next day, and a `Time` has
+      # no 24:00 to hold that: it stays the last millisecond of the day rather
+      # than wrapping round to the first.
+      :time -> time_from_ms(if days > floor(serial), do: @ms_per_day - 1, else: ms)
       :datetime -> NaiveDateTime.new!(Date.add(@epoch, days), time_from_ms(ms))
     end
+  end
+
+  @doc false
+  # What a reader makes of a number its format calls a moment. The kind the
+  # format names, when that kind can hold the whole number; a `NaiveDateTime`
+  # when it cannot, because a format is how a value is shown, not what it is: a
+  # timestamp shown as `h:mm` still has its date, and one shown as `yyyy-mm-dd`
+  # still has its time, and reading either as the smaller kind would write the
+  # truncated number back on the next write. The number itself, unchanged, when
+  # it is no moment at all (outside the years 1 to 9999).
+  @spec read_serial(number(), :date | :datetime | :time) ::
+          Date.t() | NaiveDateTime.t() | Time.t() | number()
+  def read_serial(serial, kind) when is_number(serial) do
+    cond do
+      not in_range?(serial) -> serial
+      kind == :date and serial == floor(serial) -> from_serial(serial, :date)
+      kind == :time and serial >= 0 and serial < 1 -> from_serial(serial, :time)
+      true -> from_serial(serial, :datetime)
+    end
+  end
+
+  # Checked on the serial first, so a magnitude no multiplication can hold never
+  # reaches one, and then on the millisecond it rounds to.
+  defp in_range?(serial) do
+    serial >= @first_serial and serial < @last_serial and
+      round(serial * @ms_per_day) < @last_serial * @ms_per_day
   end
 
   defp time_from_ms(ms) do

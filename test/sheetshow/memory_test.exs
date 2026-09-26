@@ -238,4 +238,27 @@ defmodule Sheetshow.MemoryTest do
       assert_raise Error, fn -> Memory.read!("log!A1", memory) end
     end
   end
+
+  describe "the 0.1.6 review" do
+    test "a cell read, changed and written back reads its new value, not its old result" do
+      cell = %{Cell.new("S!B1", {:formula, "=A1*2"}) | meta: %{effective: 84, formatted: "84"}}
+      memory = Memory.put_sheet(Memory.new(), "S", [cell])
+
+      {:ok, memory} = Memory.run(PutCells.new([%{cell | value: 1000}]), memory)
+      [written] = Memory.read!("S", memory)
+      assert written.value == 1000
+      refute Map.has_key?(written.meta, :effective)
+      assert {:ok, [[nil, 1000]]} = Sheetshow.read_rows("S", Sheetshow.Workbook.memory(memory))
+    end
+
+    test "a values read ends at the last value, not at the last cell with a style" do
+      cells =
+        Sheetshow.rows([["a"], ["b"]], sheet: "s") ++
+          [Cell.new("s!A6", nil, %{background: "#FFF2CC"})]
+
+      {:ok, memory} = Memory.run(Sheetshow.plan!(cells), Memory.new(["s"]))
+
+      assert {:ok, [["a"], ["b"]]} = Sheetshow.read_rows("s", Sheetshow.Workbook.memory(memory))
+    end
+  end
 end

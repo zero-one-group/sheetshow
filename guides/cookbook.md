@@ -313,9 +313,10 @@ if that is not acceptable, use a `Log`, or a store that promises
 [%Sheetshow.Op.DeleteRows{rows: 1..1}] = Sheetshow.Table.compact(snapshot)   # every tombstone, for good
 ```
 
-Soft is the default, and not out of timidity: a soft delete is one cell and
-moves nothing, so a plan aimed at a row that has since shifted leaves a flag in
-the wrong place rather than destroying a record. It is also the only safe delete
+Soft is the default, and not out of timidity: a soft delete writes the flag and
+the row's id and moves nothing, so a plan aimed at a row that has since shifted
+marks the wrong row, which the next read shows as one id on two rows, rather
+than destroying a record. It is also the only safe delete
 on `.xlsx`, where charts, defined names and pivot sources are anchored to
 addresses that nothing here will fix when rows move.
 

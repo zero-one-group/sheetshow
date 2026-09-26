@@ -371,14 +371,19 @@ defmodule Sheetshow do
   @doc """
   Adds `n` empty rows below the cells, so the next `stack/1` leaves a
   gap. The room is held by one empty cell in the first column of the last
-  padded row.
+  padded row, marked `meta: %{pad: true}`.
+
+  That cell only holds room: `plan/2` writes nothing for it. An empty cell is
+  otherwise a cell to clear, and a padded layout written onto a sheet that
+  already had something in column A would have cleared it, outside the block
+  that asked for the room.
 
       iex> Sheetshow.row([1]) |> Sheetshow.pad_below(2) |> Sheetshow.max_row()
       2
   """
   @spec pad_below(cells(), pos_integer()) :: cells()
   def pad_below(cells, n \\ 1) when is_integer(n) and n > 0 do
-    stack([cells, [Cell.new(Coord.new(n - 1, 0, sheet_of(cells)))]])
+    stack([cells, [padding(Coord.new(n - 1, 0, sheet_of(cells)))]])
   end
 
   @doc """
@@ -389,8 +394,10 @@ defmodule Sheetshow do
   """
   @spec pad_right(cells(), pos_integer()) :: cells()
   def pad_right(cells, n \\ 1) when is_integer(n) and n > 0 do
-    beside([cells, [Cell.new(Coord.new(0, n - 1, sheet_of(cells)))]])
+    beside([cells, [padding(Coord.new(0, n - 1, sheet_of(cells)))]])
   end
+
+  defp padding(coord), do: %{Cell.new(coord) | meta: %{pad: true}}
 
   @doc """
   Moves every cell by `rows` down and `cols` right; see `Sheetshow.Cell.shift/3`.

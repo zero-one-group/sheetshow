@@ -56,17 +56,33 @@ defmodule Sheetshow.Xlsx.Strings do
   """
   @spec parse(binary()) :: {:ok, t()} | {:error, Sheetshow.Error.t()}
   def parse(xml) when is_binary(xml) do
-    initial = %{strings: [], current: nil, chars: [], collecting: false, phonetic: false}
+    initial = %{
+      strings: [],
+      current: nil,
+      rich: false,
+      chars: [],
+      collecting: false,
+      phonetic: false
+    }
 
     with {:ok, state} <- Xml.fold(xml, "xl/sharedStrings.xml", initial, &event/2) do
-      strings = Enum.reverse(state.strings)
+      entries = Enum.reverse(state.strings)
+      strings = Enum.map(entries, &elem(&1, 0))
 
       {:ok,
        %__MODULE__{
          table: List.to_tuple(strings),
          # First occurrence wins, so writing a string the table already holds
-         # points at the one already there rather than adding a duplicate.
-         index: strings |> Enum.with_index() |> Enum.reverse() |> Map.new(),
+         # points at the one already there rather than adding a duplicate. Only
+         # a plain entry counts: one with a run of bold in it reads as the same
+         # text, and a new cell pointed at it would be bold too.
+         index:
+           entries
+           |> Enum.with_index()
+           |> Enum.reject(fn {{_text, rich}, _index} -> rich end)
+           |> Enum.map(fn {{text, _rich}, index} -> {text, index} end)
+           |> Enum.reverse()
+           |> Map.new(),
          shared?: true,
          source: xml
        }}
@@ -205,12 +221,20 @@ defmodule Sheetshow.Xlsx.Strings do
     end
   end
 
-  defp event({:startElement, _uri, ~c"si", _q, _attrs}, state), do: %{state | current: []}
+  defp event({:startElement, _uri, ~c"si", _q, _attrs}, state),
+    do: %{state | current: [], rich: false}
 
   defp event({:endElement, _uri, ~c"si", _q}, %{current: current} = state)
        when is_list(current) do
     string = current |> Enum.reverse() |> IO.iodata_to_binary()
-    %{state | strings: [string | state.strings], current: nil}
+    %{state | strings: [{string, state.rich} | state.strings], current: nil}
+  end
+
+  # A run, or a phonetic reading: the entry says more than its text.
+  defp event({:startElement, _uri, name, _q, _attrs}, %{current: current} = state)
+       when is_list(current) and name in [~c"r", ~c"rPh"] do
+    state = %{state | rich: true}
+    if name == ~c"rPh", do: %{state | phonetic: true}, else: state
   end
 
   defp event(
@@ -228,11 +252,14 @@ defmodule Sheetshow.Xlsx.Strings do
   # <rPh> carries the phonetic hints a Japanese workbook puts beside a run:
   # the reading of the characters, not the characters. A reader that collects
   # them gets every such string twice over.
-  defp event({:startElement, _uri, ~c"rPh", _q, _attrs}, state), do: %{state | phonetic: true}
   defp event({:endElement, _uri, ~c"rPh", _q}, state), do: %{state | phonetic: false}
 
-  defp event({:characters, chars}, %{collecting: true} = state),
-    do: %{state | chars: [chars | state.chars]}
+  # A SAX parser reports text that is nothing but whitespace as ignorable, which
+  # it is not in a string: `" "` is a string of one space, and a run of bold
+  # between two words is often just the space between them.
+  defp event({kind, chars}, %{collecting: true} = state)
+       when kind in [:characters, :ignorableWhitespace],
+       do: %{state | chars: [chars | state.chars]}
 
   defp event(_event, state), do: state
 end

@@ -369,7 +369,14 @@ defmodule Sheetshow.Xlsx.Styles do
 
   # A colour inside a <font> is the text colour; inside a <fill> it is the
   # background, and only the foreground of the pattern is the one people mean.
-  defp event({:startElement, _uri, ~c"numFmt", _q, attrs}, state) do
+  # Only the formats in `<numFmts>` are ones a cell can point at. A differential
+  # format (conditional formatting's, under `<dxfs>`) carries a `<numFmt>` of its
+  # own, often reusing an id, and reading it as a cell format made a date read as
+  # a percentage and gave a new style an id the file never defined.
+  defp event({:startElement, _uri, ~c"numFmts", _q, _attrs}, state),
+    do: %{state | section: :numfmts}
+
+  defp event({:startElement, _uri, ~c"numFmt", _q, attrs}, %{section: :numfmts} = state) do
     id = Xml.int(attrs, ~c"numFmtId")
     code = Xml.attr(attrs, ~c"formatCode")
 
@@ -410,14 +417,34 @@ defmodule Sheetshow.Xlsx.Styles do
     %{state | fills: [fill | state.fills], fill: nil}
   end
 
+  # What a font or a fill says that no key of a Sheetshow style can: a superscript,
+  # a shadow, a double underline, a gradient. Such an entry reads as the nearest
+  # style Sheetshow has, and is marked, so a new cell asking for that nearest
+  # style is never handed the entry that says more (see `assemble/2`).
+  defp event({:startElement, _uri, name, _q, _attrs}, %{font: font} = state)
+       when is_map(font) and
+              name in [~c"vertAlign", ~c"outline", ~c"shadow", ~c"condense", ~c"extend"],
+       do: %{state | font: Map.put(font, :unmodelled, true)}
+
+  defp event({:startElement, _uri, ~c"gradientFill", _q, _attrs}, %{fill: fill} = state)
+       when is_map(fill),
+       do: %{state | fill: Map.put(fill, :unmodelled, true)}
+
   defp event({:startElement, _uri, ~c"b", _q, attrs}, %{font: font} = state) when is_map(font),
     do: put_font(state, :bold, Xml.flag(attrs, ~c"val"))
 
   defp event({:startElement, _uri, ~c"i", _q, attrs}, %{font: font} = state) when is_map(font),
     do: put_font(state, :italic, Xml.flag(attrs, ~c"val"))
 
-  defp event({:startElement, _uri, ~c"u", _q, attrs}, %{font: font} = state) when is_map(font),
-    do: put_font(state, :underline, Xml.flag(attrs, ~c"val"))
+  defp event({:startElement, _uri, ~c"u", _q, attrs}, %{font: font} = state) when is_map(font) do
+    state = put_font(state, :underline, Xml.flag(attrs, ~c"val"))
+
+    # A single underline is the one `underline: true` means; a double or an
+    # accounting one is more than that.
+    if Xml.attr(attrs, ~c"val") in [nil, "single", "none", "0", "false", "1", "true"],
+      do: state,
+      else: %{state | font: Map.put(state.font, :unmodelled, true)}
+  end
 
   defp event({:startElement, _uri, ~c"strike", _q, attrs}, %{font: font} = state)
        when is_map(font),
@@ -438,18 +465,29 @@ defmodule Sheetshow.Xlsx.Styles do
     end
   end
 
+  # A theme or indexed colour is one Sheetshow cannot name, so it reads as no
+  # colour, and the font is marked as saying more than that.
   defp event({:startElement, _uri, ~c"color", _q, attrs}, %{font: font} = state)
        when is_map(font) do
     case Xml.color(attrs) do
-      nil -> state
+      nil -> %{state | font: Map.put(font, :unmodelled, true)}
       color -> put_font(state, :color, color)
     end
   end
 
-  # A pattern of "none" is no fill at all, whatever colour it names.
+  # A pattern of "none" is no fill at all, whatever colour it names, and a solid
+  # one is a background; any other pattern is more than a background.
   defp event({:startElement, _uri, ~c"patternFill", _q, attrs}, %{fill: fill} = state)
        when is_map(fill) do
-    %{state | fill: Map.put(fill, :pattern, Xml.attr(attrs, ~c"patternType"))}
+    pattern = Xml.attr(attrs, ~c"patternType")
+    fill = Map.put(fill, :pattern, pattern)
+
+    fill =
+      if pattern in [nil, "none", "solid", "gray125"],
+        do: fill,
+        else: Map.put(fill, :unmodelled, true)
+
+    %{state | fill: fill}
   end
 
   defp event({:startElement, _uri, ~c"fgColor", _q, attrs}, %{fill: fill} = state)
@@ -467,10 +505,19 @@ defmodule Sheetshow.Xlsx.Styles do
           number_format: Xml.int(attrs, ~c"numFmtId", 0),
           font: Xml.int(attrs, ~c"fontId", 0),
           fill: Xml.int(attrs, ~c"fillId", 0),
-          alignment: %{}
+          alignment: %{},
+          # A border, a leading apostrophe, a pivot button: nothing a Sheetshow
+          # style has a key for.
+          unmodelled:
+            Xml.int(attrs, ~c"borderId", 0) != 0 or Xml.flag(attrs, ~c"quotePrefix", false) or
+              Xml.flag(attrs, ~c"pivotButton", false)
         }
     }
   end
+
+  defp event({:startElement, _uri, ~c"protection", _q, _attrs}, %{xf: xf} = state)
+       when is_map(xf),
+       do: %{state | xf: %{xf | unmodelled: true}}
 
   defp event({:endElement, _uri, ~c"xf", _q}, %{section: :cell_xfs, xf: xf} = state)
        when is_map(xf) do
@@ -485,7 +532,26 @@ defmodule Sheetshow.Xlsx.Styles do
       |> put_if(:vertical, Map.get(@vertical, Xml.attr(attrs, ~c"vertical")))
       |> put_if(:wrap, if(Xml.flag(attrs, ~c"wrapText", false), do: :wrap))
 
-    %{state | xf: %{xf | alignment: alignment}}
+    # An indent, a rotation, shrink-to-fit, or an alignment Sheetshow has no name
+    # for (`justify`, `fill`, `distributed`).
+    unmodelled =
+      Enum.any?(attrs, fn {_uri, _prefix, name, value} ->
+        case List.to_string(name) do
+          "horizontal" ->
+            not Map.has_key?(@horizontal, List.to_string(value)) and value != ~c"general"
+
+          "vertical" ->
+            not Map.has_key?(@vertical, List.to_string(value))
+
+          "wrapText" ->
+            false
+
+          _other ->
+            value not in [~c"0", ~c"false"]
+        end
+      end)
+
+    %{state | xf: %{xf | alignment: alignment, unmodelled: xf.unmodelled or unmodelled}}
   end
 
   defp event(_event, state), do: state
@@ -506,25 +572,37 @@ defmodule Sheetshow.Xlsx.Styles do
       |> Map.new(fn {xf, index} ->
         {code, kind} = number_format(xf.number_format, state.number_formats)
 
+        font = if xf.font == 0, do: %{}, else: Map.get(fonts, xf.font, %{})
+        fill = Map.get(fills, xf.fill, %{})
+
         style =
           %{}
           |> Map.merge(font(fonts, xf.font))
-          |> Map.merge(background(Map.get(fills, xf.fill, %{})))
+          |> Map.merge(background(fill))
           |> Map.merge(xf.alignment)
           |> put_if(:number_format, code)
 
-        {index, %{style: style, kind: kind}}
+        exact =
+          not (xf.unmodelled or Map.get(font, :unmodelled, false) or
+                 Map.get(fill, :unmodelled, false))
+
+        {index, %{style: style, kind: kind, exact: exact}}
       end)
 
     formats = if formats == %{}, do: new().formats, else: formats
 
     %__MODULE__{
-      formats: formats,
+      formats: Map.new(formats, fn {index, entry} -> {index, Map.delete(entry, :exact)} end),
       number_formats: state.number_formats,
       # Last index wins on a tie, so a style that two cellXfs describe the same
       # way is written back as the later one, which changes nothing about how
       # it looks, and keeps the earlier one free for the cells already using it.
-      lookup: Map.new(formats, fn {index, entry} -> {entry.style, index} end),
+      # Only an entry that says exactly the style is one a new cell may share:
+      # one with a border, say, reads as the same style without it, and a new
+      # cell handed it would gain a border nobody asked for.
+      lookup:
+        for({index, %{exact: true} = entry} <- formats, into: %{}, do: {entry.style, index})
+        |> Map.put_new(%{}, 0),
       source: source,
       counts: %{
         fonts: max(map_size(fonts), 1),
@@ -540,7 +618,7 @@ defmodule Sheetshow.Xlsx.Styles do
   # naming it on a cell says nothing about that cell. A style is how a cell
   # differs from a plain one, and a plain cell's style is `%{}`.
   defp font(_fonts, 0), do: %{}
-  defp font(fonts, id), do: Map.get(fonts, id, %{})
+  defp font(fonts, id), do: fonts |> Map.get(id, %{}) |> Map.delete(:unmodelled)
 
   defp background(%{pattern: pattern, background: color}) when pattern not in [nil, "none"],
     do: %{background: color}

@@ -19,20 +19,24 @@ defmodule Sheetshow.Xlsx.Formula do
   # string literal. Not preceded by a letter, digit, `_`, `.` or `$`, so `LOG10`
   # in `LOG10(A1)` and `24` in `1.5E24` are left alone, and not followed by one
   # or by `(`, so a function name that happens to look like a reference is too.
+  # Nor followed by `!`, or by `:` and a name and `!`: that is a sheet's name
+  # (`Q1!A1`, `Q1:Q4!A1`), which LibreOffice writes unquoted even when it looks
+  # like a cell, and moving it pointed the formula at another sheet.
   @token ~r/
     (?<![A-Za-z0-9_.$])
     (?:
-      (\$?)([A-Za-z]{1,3})(\$?)([0-9]+)(?![A-Za-z0-9_(])
+      (\$?)([A-Za-z]{1,3})(\$?)([0-9]+)(?![A-Za-z0-9_(!])(?!:[A-Za-z0-9_.$]+!)
       |
-      (\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![A-Za-z0-9_(])
+      (\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![A-Za-z0-9_(!])
       |
-      (\$?)([0-9]+):(\$?)([0-9]+)(?![A-Za-z0-9_(])
+      (\$?)([0-9]+):(\$?)([0-9]+)(?![A-Za-z0-9_(!])
     )
   /x
 
-  # A string literal in double quotes, or a sheet name in single ones, either
-  # doubling its own quote inside. Nothing inside either is a reference.
-  @literal ~r/"(?:[^"]|"")*"|'(?:[^']|'')*'/
+  # The last column (XFD) and the last row there are: a reference moved past
+  # either is off the sheet, which is `#REF!`, as it is moved past the first.
+  @last_col 16_383
+  @last_row 1_048_576
 
   @doc """
   The formula as it reads `rows` down and `cols` across from where it was
@@ -44,18 +48,74 @@ defmodule Sheetshow.Xlsx.Formula do
       ~s|SUM(C:C)&"A1"&'Q1 costs'!D2|
       iex> Sheetshow.Xlsx.Formula.translate("A1", -1, 0)
       "#REF!"
+      iex> Sheetshow.Xlsx.Formula.translate("Q1!A1+Table1[Q1]", 1, 0)
+      "Q1!A2+Table1[Q1]"
   """
   @spec translate(String.t(), integer(), integer()) :: String.t()
   def translate(formula, 0, 0), do: formula
 
   def translate(formula, rows, cols) when is_binary(formula) do
-    @literal
-    |> Regex.split(formula, include_captures: true)
+    formula
+    |> segments([], [])
     |> Enum.map_join(fn
-      <<quote, _::binary>> = literal when quote in [?", ?'] -> literal
-      segment -> shift(segment, rows, cols)
+      {:literal, text} -> text
+      {:plain, text} -> shift(text, rows, cols)
     end)
   end
+
+  # The formula cut into what may hold a reference and what may not: a string in
+  # double quotes and a sheet name in single ones (each doubling its own quote
+  # inside), and anything in square brackets, nested or not. A bracket is a
+  # structured reference (`Table1[Q1]`, `Sales[[#This Row],[Q1]]`, `[@Q1]`), whose
+  # contents are a table's column names, or an external workbook's index (`[1]`);
+  # either way nothing in it is a cell to move.
+  defp segments("", plain, acc), do: Enum.reverse(flush(plain, acc))
+
+  defp segments(<<quote, _::binary>> = rest, plain, acc) when quote in [?", ?'] do
+    {literal, rest} = quoted(rest, quote)
+    segments(rest, [], [{:literal, literal} | flush(plain, acc)])
+  end
+
+  defp segments("[" <> _ = rest, plain, acc) do
+    {literal, rest} = bracketed(rest, 0, [])
+    segments(rest, [], [{:literal, literal} | flush(plain, acc)])
+  end
+
+  defp segments(<<char::utf8, rest::binary>>, plain, acc),
+    do: segments(rest, [<<char::utf8>> | plain], acc)
+
+  defp flush([], acc), do: acc
+  defp flush(plain, acc), do: [{:plain, plain |> Enum.reverse() |> IO.iodata_to_binary()} | acc]
+
+  # A quoted run up to its closing quote, a doubled quote being one quote inside
+  # it; an unclosed one runs to the end.
+  defp quoted(<<quote, rest::binary>>, quote), do: quoted_rest(rest, quote, [<<quote>>])
+
+  defp quoted_rest(<<quote, quote, rest::binary>>, quote, acc),
+    do: quoted_rest(rest, quote, [<<quote, quote>> | acc])
+
+  defp quoted_rest(<<quote, rest::binary>>, quote, acc),
+    do: {IO.iodata_to_binary(Enum.reverse([<<quote>> | acc])), rest}
+
+  defp quoted_rest(<<char::utf8, rest::binary>>, quote, acc),
+    do: quoted_rest(rest, quote, [<<char::utf8>> | acc])
+
+  defp quoted_rest("", _quote, acc), do: {IO.iodata_to_binary(Enum.reverse(acc)), ""}
+
+  # Brackets nest (`[[#This Row],[Q1]]`), and a `'` inside one escapes the
+  # character after it, so `[Q1']']` is one bracket.
+  defp bracketed("[" <> rest, depth, acc), do: bracketed(rest, depth + 1, ["[" | acc])
+
+  defp bracketed("]" <> rest, 1, acc), do: {IO.iodata_to_binary(Enum.reverse(["]" | acc])), rest}
+  defp bracketed("]" <> rest, depth, acc), do: bracketed(rest, depth - 1, ["]" | acc])
+
+  defp bracketed(<<?', char::utf8, rest::binary>>, depth, acc),
+    do: bracketed(rest, depth, [<<?', char::utf8>> | acc])
+
+  defp bracketed(<<char::utf8, rest::binary>>, depth, acc),
+    do: bracketed(rest, depth, [<<char::utf8>> | acc])
+
+  defp bracketed("", _depth, acc), do: {IO.iodata_to_binary(Enum.reverse(acc)), ""}
 
   defp shift(segment, rows, cols) do
     Regex.replace(@token, segment, fn
@@ -101,7 +161,7 @@ defmodule Sheetshow.Xlsx.Formula do
 
   defp column("", letters, cols) do
     case A1.letters_to_col(letters) + cols do
-      col when col >= 0 -> {:ok, A1.col_to_letters(col)}
+      col when col >= 0 and col <= @last_col -> {:ok, A1.col_to_letters(col)}
       _off -> :error
     end
   end
@@ -110,7 +170,7 @@ defmodule Sheetshow.Xlsx.Formula do
 
   defp row("", digits, rows) do
     case String.to_integer(digits) + rows do
-      row when row >= 1 -> {:ok, Integer.to_string(row)}
+      row when row >= 1 and row <= @last_row -> {:ok, Integer.to_string(row)}
       _off -> :error
     end
   end

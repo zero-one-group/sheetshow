@@ -3,6 +3,133 @@
 Pre-1.0: a minor version may rename or remove. When it does, the migration is one
 line here.
 
+## 0.1.6 (2026-09-24)
+
+A fifth review pass over 0.1.5, and the first to sweep every module rather than
+follow up the last one. Every fix has a regression test beside it; the ones that
+change what a call accepts or answers say so.
+
+The `.xlsx` codec, a write to one cell and what it did to the others:
+
+- **Whitespace-only text read as empty.** The XML parser reports a run of
+  nothing but spaces as ignorable, so `" "`, `"\n"` and the space between two
+  runs of rich text read as `""`, and the next write to the tab made that true.
+- **A timestamp shown as a date, or as a time, lost the part its format hid**,
+  and the next write put the truncated number back. A number reads as the kind
+  its format names only when that kind holds all of it, and as a
+  `NaiveDateTime` otherwise; the Google decoder follows the same rule.
+- **The 1904 date system was ignored**, putting every date in such a workbook
+  four years and a day out, on read and on write. A serial before 1 March 1900
+  is now the day Excel means by it, and a time of day with no date (1899-12-30,
+  as Google gives one) still reads back as itself.
+- **What a cell or a row said besides its value was dropped on a rewrite**: an
+  array formula's range, a data table, a spilled array's `cm`, a picture's `vm`,
+  which of two shared strings with the same text a cell pointed at (the bold one
+  or the plain one), an inline string's runs, a row's hidden flag, outline level,
+  own style and exact height, and a column's hidden flag and style. All of it is
+  kept while the cell or row is unchanged and where it was read, a height set
+  on an empty row now lands, and a new string never points at a rich entry.
+- **A shared formula over a sheet named like a cell moved the sheet**: `Q1!A1`
+  filled down read as `Q2!A2`, and a structured reference's column (`Table1[Q1]`)
+  moved too. A reference moved past XFD or row 1,048,576 is `#REF!`.
+- A cached formula result is not kept on a tab Sheetshow writes, since nothing
+  here can tell which ones the write left true, and the workbook is now marked
+  to be recalculated (`fullCalcOnLoad`) when a spreadsheet next opens it. A
+  values read of such a formula gives the formula until then, and its `:cast`
+  error says so.
+- A large number in a date-formatted cell made the read hang (`1.0e16`) or fail
+  (`1.0e308`); it reads as the number it is. `.5`, `5.` and a padded `7` read as
+  numbers rather than nothing, an inline string's phonetic reading is no longer
+  appended to its text, a serial finer than a millisecond is written back as it
+  was read, and a conditional format's number format is no longer read as one a
+  cell can point at.
+- A new cell is no longer handed an existing style that says more than it asked
+  for (a border, a theme colour, a pattern), and an error somebody typed
+  (`#N/A`), read and written back, is that error again rather than an empty cell.
+
+The `.xlsx` package, adding and removing a tab:
+
+- **Deleting a sheet left the defined names and the workbook view counting the
+  old positions**, so the next sheet's print area and autofilter moved to the
+  one after it, and a workbook whose names pointed past the last sheet would not
+  open in LibreOffice. Names on the deleted sheet go, later ones count down, a
+  reference to the deleted sheet by name reads `#REF!`, and the active tab stays
+  inside the workbook.
+- **Deleting a sheet left its relationships part behind**, and the next sheet
+  given the same part name picked up the deleted sheet's comments, drawings and
+  tables. The sheet's relationships go with it, and so does every part only it
+  reached.
+- Adding a sheet to a workbook whose `workbook.xml`, relationships or content
+  types spell their elements with a namespace prefix answered `:ok` and
+  registered the tab nowhere; it is refused with `:unsupported`. A workbook part
+  at the package root had its new sheet pointed at the first one.
+- Adding a sheet refuses a name a chart sheet already has, one that differs from
+  an existing name only by case (`:duplicate_sheet`), and one no spreadsheet can
+  hold: any of `: \ / ? * [ ]`, an apostrophe at either end, a control
+  character, more than 31 characters (`:unsupported`). A tab, newline or return
+  in an attribute is written as a reference, so it reads back as itself.
+- The zip layer checks each part's CRC-32, refuses a package that names one part
+  twice, and keeps a UTF-8 part name marked as UTF-8. A `>` in a sheet's name no
+  longer stops its `<sheet>` element from being found.
+
+The database layer:
+
+- **A number typed into a `:decimal` or `:string` column read back with binary
+  noise**: `19.99` as `"19.989999999999998"`. It reads as the fewest digits that
+  mean the same double.
+- **A formula in an id cell or a header cell crashed every read** of a `Log` or
+  `Table` on Memory, and of an `.xlsx` table once it had been written. It is a
+  row without an id, and a column that is not there.
+- A timestamp in a `:date` column, a date in a `:datetime` one, and a moment in a
+  number or text column cast as the serial number Google hands back for the same
+  cell, so the backends agree; `.xlsx` read them all as `nil`.
+- A soft delete writes the row's id back beside the flag, as an update does; the
+  docs said one cell, and now say two, and why.
+- An id that is nothing but spaces reads as no id, so `Sheetshow.Log.Event.new/2`
+  and `Sheetshow.Table.insert/2` refuse one. An integer too large for a double is
+  the wrong type for a `:float` column rather than a crash, and a `:decimal` is
+  read as decimal syntax, so `1E+400` is one.
+
+Cells, the planner and Memory:
+
+- **Text that is not UTF-8 passed validation**, then wrote a `.xlsx` file no
+  reader could open, and crashed `run/2` on Google. It is `:invalid_value`, or
+  `:invalid_record` through a schema, and `Sheetshow.Op.AddSheet.new/1` refuses
+  such a title.
+- **The cell `Sheetshow.pad_below/2` and `Sheetshow.pad_right/2` leave to hold
+  room was written**, as an empty cell, which cleared whatever was in column A
+  (or row 1) outside the block that asked for the room. The planner skips it.
+- `Sheetshow.Value.from_serial/2` raises `ArgumentError` for a serial outside the
+  years 1 to 9999, where it used to take time in proportion to the serial; a
+  time a hair before midnight no longer wraps to the start of the day.
+- A cell a plan writes keeps no `meta.effective` or `meta.formatted` in Memory,
+  so a formula read, changed and written back no longer reads its old result;
+  and a values read ends at the last value, not at the last cell with a style.
+- `Sheetshow.Cell.validate/1` checks the coordinate, as its doc said: a negative
+  row or column, or an empty sheet name, is `:invalid_cell`.
+
+Google, credentials and stores:
+
+- **Redirects are no longer followed.** `:httpc` followed one to any host with
+  every header, the `Authorization` and a WebDAV password among them; a 3xx is an
+  `:http` error now.
+- **A WebDAV 409 is `:http`, not `:conflict`**: it is how WebDAV says the folder
+  is not there, and the retry `:conflict` asks for could never work.
+- `Sheetshow.Store.Local` writes through a symbolic link rather than replacing
+  it, and takes a file's version before its bytes, so a file replaced mid-read
+  is caught by the next write rather than let through.
+- A token endpoint answering its `error` as an object, or a 429, was a crash and
+  an `:auth` error; it is `:auth` and `:rate_limited`. An answer that has a token
+  but no `expires_in` no longer carries the token into the error.
+- A service-account key that cannot sign (a public key, an EC key) is refused
+  by `Sheetshow.ServiceAccount.from_json/1` rather than raising at
+  `Sheetshow.connect/1`. `Sheetshow.OAuth.authorize/3` refuses an unknown
+  `:http` option, and `Sheetshow.OAuth.code/2` an empty code.
+- A tab a plan added is remembered by the id the plan asked for when no reply
+  names it, rather than with none (which sent its next write to the first tab).
+- `Sheetshow.Store.webdav/2` no longer prints the password in the error for an
+  unknown option, and keeps `:headers` given beside a username and password.
+
 ## 0.1.5 (2026-09-19)
 
 A fourth external review pass over 0.1.4, two edge cases the last pass' fixes left

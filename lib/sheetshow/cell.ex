@@ -14,9 +14,13 @@ defmodule Sheetshow.Cell do
   know most of Sheetshow: everything else builds lists of them, moves them
   about, or turns them into requests.
 
-  `meta` is yours. No writer looks at it; readers put what they learned there,
-  such as the text Sheets displayed for a value. Values and styles are checked
-  by `validate/1`, which writers call, rather than on construction.
+  `meta` is where readers put what they learned, such as the text Sheets
+  displayed for a value, and it is yours besides. A writer looks at it only for
+  what a reader of the same backend put there to write an untouched cell back as
+  it was (an `.xlsx` cell's style index, say), and each such key is checked
+  against the cell before it is used; the planner skips the cell
+  `Sheetshow.pad_below/2` leaves to hold room. Values and styles are checked by
+  `validate/1`, which writers call, rather than on construction.
   """
 
   alias Sheetshow.{Coord, Error, Style, Value}
@@ -51,8 +55,9 @@ defmodule Sheetshow.Cell do
       ...>   Sheetshow.Cell.validate(Sheetshow.Cell.new("A1", 1, %{bold: "yes"}))
   """
   @spec validate(term()) :: :ok | {:error, Error.t()}
-  def validate(%__MODULE__{coord: %Coord{}, value: value, style: style} = cell) do
-    with :ok <- Value.validate(value),
+  def validate(%__MODULE__{coord: %Coord{} = coord, value: value, style: style} = cell) do
+    with :ok <- coordinate(coord),
+         :ok <- Value.validate(value),
          :ok <- Style.validate(style) do
       :ok
     else
@@ -63,6 +68,25 @@ defmodule Sheetshow.Cell do
   def validate(other) do
     {:error,
      Error.new(:invalid_cell, "not a cell with a coordinate: #{inspect(other)}", cell: other)}
+  end
+
+  # A coordinate made by hand, or shifted past the edge, can say what no sheet
+  # has: a row above the first, or a sheet with no name. One that got past here
+  # was stored where no read could see it, dropped, or sent to Google as a
+  # negative index.
+  defp coordinate(%Coord{row: row, col: col, sheet: sheet} = coord) do
+    cond do
+      not (is_integer(row) and row >= 0 and is_integer(col) and col >= 0) ->
+        {:error,
+         Error.new(:invalid_cell, "a cell's row and column count from 0, got #{inspect(coord)}")}
+
+      not (is_nil(sheet) or (is_binary(sheet) and sheet != "" and String.valid?(sheet))) ->
+        {:error,
+         Error.new(:invalid_cell, "a cell's sheet is nil or a name, got #{inspect(sheet)}")}
+
+      true ->
+        :ok
+    end
   end
 
   @doc "Whether the term is a valid cell."

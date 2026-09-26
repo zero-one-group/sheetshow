@@ -417,4 +417,38 @@ defmodule Sheetshow.LogTest do
       assert Log.fold([]) == []
     end
   end
+
+  describe "the 0.1.6 review" do
+    test "a formula in the id column or the header flags the row, and the read goes on" do
+      log = Log.new("l", item: :string)
+
+      rows = [
+        ["id", "deleted", "item", {:formula, "=\"notes\""}],
+        [{:formula, "=\"x\"&ROW()"}, nil, "Rent", nil],
+        ["b", nil, "Food", nil]
+      ]
+
+      assert {:ok, [first, second]} = Log.decode(rows, log)
+      assert first.id == nil
+      assert first.errors.id.reason == :cast
+      assert second.id == "b"
+    end
+
+    test "rows whose id is only spaces have no id, and are kept apart" do
+      log = Log.new("l", item: :string)
+      rows = [["id", "deleted", "item"], [" ", nil, "typed by hand"], [" ", nil, "typed again"]]
+
+      assert rows |> Log.decode!(log) |> Log.fold() |> Enum.map(& &1.record.item) ==
+               ["typed by hand", "typed again"]
+    end
+
+    test "an event's id has something in it besides spaces" do
+      for id <- [" ", "\t", <<"Caf", 233>>] do
+        assert_raise ArgumentError, fn -> Event.new(%{}, id: id) end
+      end
+
+      log = Log.new("l", item: :string)
+      assert {:error, %Error{reason: :missing_id}} = Log.plan([%Event{id: "  "}], log)
+    end
+  end
 end
